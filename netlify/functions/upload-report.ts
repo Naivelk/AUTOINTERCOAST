@@ -1,31 +1,73 @@
+// netlify/functions/upload-report.ts
 import type { Handler } from '@netlify/functions';
-import { getStore } from '@netlify/blobs';
-import { randomUUID } from 'node:crypto';
 
 export const handler: Handler = async (event) => {
   try {
-    const { filename = 'report.pdf', data } = event.body ? JSON.parse(event.body) : {};
-
-    if (!data) {
-      return { statusCode: 400, body: 'Missing file data' };
+    if (event.httpMethod !== 'POST') {
+      return { statusCode: 405, body: 'Method Not Allowed' };
     }
 
-    const store = getStore('reports');
-    const key = `reports/${randomUUID()}-${filename}`;
+    const body = event.body ? JSON.parse(event.body) : {};
+    const filename: string = body?.filename || `report-${Date.now()}.pdf`;
+    let data: string = body?.data;
 
-    // Subir el archivo directamente desde la función
-    // @ts-ignore - Los tipos del paquete son incorrectos, store.set acepta Buffer.
-    await store.set(key, Buffer.from(data, 'base64'), {
-      metadata: { filename },
+    if (!data) {
+      return { statusCode: 400, body: 'Missing "data" (base64 of PDF)' };
+    }
+
+    // permite data URL o base64 puro
+    data = data.replace(/^data:.*;base64,/, '');
+    const bytes = Buffer.from(data, 'base64');
+
+    // --- Credenciales necesarias para usar la API de Netlify Blobs ---
+    const siteID =
+      process.env.SITE_ID || process.env.NETLIFY_SITE_ID; // SITE_ID la inyecta Netlify (reservada)
+    const token = process.env.NETLIFY_API_TOKEN;
+
+    if (!siteID || !token) {
+      return {
+        statusCode: 500,
+        body: 'SITE_ID/NETLIFY_SITE_ID y NETLIFY_API_TOKEN deben estar definidos',
+      };
+    }
+
+    const store = 'reports';
+    const key = `${store}/${Date.now()}-${Math.random()
+      .toString(16)
+      .slice(2)}-${filename}`;
+
+    // Subir el binario vía API REST de Netlify
+    const apiUrl = `https://api.netlify.com/api/v1/sites/${siteID}/blobs/${store}/${encodeURIComponent(
+      key.replace(`${store}/`, '') // la ruta después del nombre del store
+    )}`;
+
+    const put = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'content-type': 'application/octet-stream',
+      },
+      body: bytes,
     });
+
+    if (!put.ok) {
+      const errText = await put.text().catch(() => '');
+      return {
+        statusCode: 502,
+        body: `Blob upload failed: ${put.status} ${errText}`,
+      };
+    }
 
     return {
       statusCode: 200,
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key }),
+      body: JSON.stringify({ ok: true, key }),
     };
   } catch (e: any) {
     console.error('upload-report error:', e);
-    return { statusCode: 500, body: e?.message || 'Internal server error' };
+    return { statusCode: 500, body: e?.message || 'internal error' };
   }
 };
+
+// Fallback CommonJS
+;(module as any).exports = { handler };
