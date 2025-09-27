@@ -1,4 +1,4 @@
-import React, { useContext, useState, useEffect } from 'react';
+﻿import React, { useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Modal from 'react-modal';
 import { InspectionContext } from '../App';
@@ -160,118 +160,107 @@ const SummaryScreen: React.FC = () => {
       setIsGeneratingPdf(false);
     }
   };
+
+  const blobToBase64 = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('No se pudo leer el PDF'));
+      reader.onload = () => {
+        const result = reader.result as string;
+        // result es "data:application/pdf;base64,XXXX"
+        const base64 = result.split(',')[1] || '';
+        resolve(base64);
+      };
+      reader.readAsDataURL(blob);
+    });
   
   const handleSendEmail = async () => {
-    // Forzar actualización para despliegue v2
     if (!email || !currentInspection) {
       console.error('Email o inspección no definidos');
       return;
     }
-
-    // Validar formato de correo
+  
+    // Validar email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      console.error('Formato de correo inválido:', email);
       setModalTitle('Error');
       setModalMessage('El formato del correo electrónico no es válido');
       setShowSuccessModal(true);
       setIsSendingEmail(false);
       return;
     }
-
+  
     setIsSendingEmail(true);
     setModalTitle('Enviando correo...');
     setModalMessage('Estamos preparando el informe. Por favor, espera...');
     setShowSuccessModal(true);
-
-    // Función para manejar errores
+  
     const handleError = (error: unknown) => {
       console.error('Error:', {
         name: error instanceof Error ? error.name : 'UnknownError',
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined
       });
-
-      let errorMessage = error instanceof Error ? error.message : 'Error desconocido';
-      if (errorMessage.includes('Failed to fetch')) {
-        errorMessage = 'No se pudo conectar con el servidor. Verifica tu conexión a Internet.';
-      } else if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
-        errorMessage = 'La operación tardó demasiado tiempo. Por favor, verifica tu conexión e inténtalo de nuevo.';
-      } else if (errorMessage.includes('400')) {
-        errorMessage = 'Error en la solicitud. Por favor, verifica los datos e inténtalo de nuevo.';
-      } else if (errorMessage.includes('500')) {
-        errorMessage = 'Error en el servidor. Por favor, inténtalo de nuevo más tarde.';
+  
+      let msg = error instanceof Error ? error.message : 'Error desconocido';
+      if (msg.includes('Failed to fetch')) {
+        msg = 'No se pudo conectar con el servidor. Verifica tu conexión a Internet.';
+      } else if (msg.includes('timeout')) {
+        msg = 'La operación tardó demasiado tiempo. Intenta de nuevo.';
       }
-
       setModalTitle('Error');
-      setModalMessage(errorMessage);
+      setModalMessage(msg);
       setShowSuccessModal(true);
       setIsSendingEmail(false);
     };
-
+  
     try {
       console.log('Iniciando proceso de envío de correo...');
-
-      // 1) Generar el PDF como Blob URL
       addDebugLog('Generando PDF...');
       setModalMessage('Generando el informe PDF...');
+  
+      // 1) Generar el PDF como Blob URL
       const pdfUrl = await generatePdfBlobUrl(currentInspection as any);
-
-      // 2) Obtener Blob real
+  
+      // 2) Obtener el Blob real y pasarlo a base64 (porque upload-report espera base64)
       setModalMessage('Procesando el archivo PDF...');
       console.log('Obteniendo PDF desde:', pdfUrl);
       const pdfResponse = await fetch(pdfUrl);
       if (!pdfResponse.ok) throw new Error('No se pudo obtener el PDF generado');
-
       const pdfBlob = await pdfResponse.blob();
+      const base64 = await blobToBase64(pdfBlob);
       console.log('PDF obtenido, tamaño:', (pdfBlob.size / (1024 * 1024)).toFixed(2), 'MB');
-
-      // 3) Usamos el Blob directamente sin conversión a base64
-
-      // 4) Obtener URL firmada para subir el archivo
+  
+      // 3) Subir el archivo al blob store mediante la función upload-report
       const filename = `inspeccion_${currentInspection.policyNumber || 'sin_poliza'}_${Date.now()}.pdf`;
-      setModalMessage('Preparando para subir el informe...');
-      
-      // Obtener URL firmada
-      const signedRes = await fetch('/.netlify/functions/get-upload-url-fix', {
+      setModalMessage('Subiendo el informe de forma segura...');
+      const upRes = await fetch('/.netlify/functions/upload-report', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ filename }),
+        body: JSON.stringify({ filename, data: base64 }),
+        credentials: 'same-origin',
       });
-      
-      if (!signedRes.ok) {
-        const errorText = await signedRes.text().catch(() => '');
-        throw new Error(`Error obteniendo URL firmada: ${signedRes.status} ${errorText}`);
+      if (!upRes.ok) {
+        const text = await upRes.text().catch(() => '');
+        throw new Error(`Error subiendo el PDF (${upRes.status}) ${text}`);
       }
-      
-      const { uploadUrl, key } = await signedRes.json();
-      
-      // 5) Subir el archivo directamente a S3 usando la URL firmada
-      setModalMessage('Subiendo el informe de forma segura...');
-      const uploadBlob = pdfBlob.type ? new Blob([pdfBlob], { type: '' }) : pdfBlob;
-      const putRes = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: uploadBlob,
-      });
-      
-      if (!putRes.ok) {
-        throw new Error('Error subiendo el archivo al almacenamiento');
-      }
-
-      // 6) Pide a la Function que envíe el correo con el adjunto
+      const { key } = await upRes.json();
+      if (!key) throw new Error('Respuesta inválida del servidor (falta key)');
+  
+      // 4) Pedir a la function que LEA del blob store y envíe adjunto con Resend
       setModalMessage('Enviando el correo con adjunto...');
       const sendRes = await fetch('/.netlify/functions/send-email-attach', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ to: email, key, filename })
+        body: JSON.stringify({ to: email, key, filename }),
+        credentials: 'same-origin',
       });
-
       if (!sendRes.ok) {
         const text = await sendRes.text();
         throw new Error(text || 'Error al enviar el correo');
       }
-
-      // 6) Actualizar el estado de la inspección
+  
+      // 5) Guardar/actualizar inspección
       const updatedInspection = {
         ...currentInspection,
         id: currentInspection.id || `inspection_${Date.now()}`,
@@ -279,22 +268,22 @@ const SummaryScreen: React.FC = () => {
         emailAddress: email,
         sentAt: new Date().toISOString(),
         pdfGenerated: true,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
       await saveInspection(updatedInspection);
-
-      // 7) Mostrar mensaje de éxito
+  
+      // 6) Éxito
       addDebugLog('¡Correo enviado con éxito!');
       setModalTitle('¡Éxito!');
       setModalMessage('El correo se ha enviado correctamente con el PDF adjunto.');
       setShowSuccessModal(true);
       setShowEmailModal(false);
-    } catch (error) {
-      handleError(error);
+    } catch (err) {
+      handleError(err);
     } finally {
       setIsSendingEmail(false);
     }
-  };
+  };  
 
   // Check for missing photos in vehicles
   useEffect(() => {
