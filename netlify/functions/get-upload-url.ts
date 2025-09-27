@@ -15,9 +15,9 @@ export const handler: Handler = async (event) => {
     const body = event?.body ? JSON.parse(event.body) : {};
     const filename: string = body?.filename || 'report.pdf';
 
-    const key = `reports/\${Date.now()}-\${Math.random()
+    const key = `reports/${Date.now()}-${Math.random()
       .toString(16)
-      .slice(2)}-\${filename}`;
+      .slice(2)}-${filename}`;
 
     // Importante: NO pasar contentType para evitar preflight/CORS
     const { url } = await getSignedURL({
