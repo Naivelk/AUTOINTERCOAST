@@ -240,17 +240,18 @@ const SummaryScreen: React.FC = () => {
       });
       
       if (!signedRes.ok) {
-        const errorText = await signedRes.text();
-        throw new Error(`Error obteniendo URL firmada: ${errorText}`);
+        const errorText = await signedRes.text().catch(() => '');
+        throw new Error(`Error obteniendo URL firmada: ${signedRes.status} ${errorText}`);
       }
       
       const { uploadUrl, key } = await signedRes.json();
       
       // 5) Subir el archivo directamente a S3 usando la URL firmada
       setModalMessage('Subiendo el informe de forma segura...');
+      const uploadBlob = pdfBlob.type ? new Blob([pdfBlob], { type: '' }) : pdfBlob;
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
-        body: pdfBlob, // Usamos el Blob directamente sin convertir a base64
+        body: uploadBlob,
       });
       
       if (!putRes.ok) {
@@ -287,6 +288,7 @@ const SummaryScreen: React.FC = () => {
       setModalTitle('¡Éxito!');
       setModalMessage('El correo se ha enviado correctamente con el PDF adjunto.');
       setShowSuccessModal(true);
+      setShowEmailModal(false);
     } catch (error) {
       handleError(error);
     } finally {
