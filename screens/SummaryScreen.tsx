@@ -233,7 +233,7 @@ const SummaryScreen: React.FC = () => {
       setModalMessage('Preparando para subir el informe...');
       
       // Obtener URL firmada
-      const signedRes = await fetch('/.netlify/functions/get-upload-url', {
+      const signedRes = await fetch('/.netlify/functions/get-upload-url-fix', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ filename }),
