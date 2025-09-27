@@ -1,0 +1,8 @@
+{
+  "name": "AutoInspect",
+  "description": "A web application for conducting vehicle inspections, capturing photos, and generating PDF reports. Inspections are stored locally.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "prompt": ""
+}

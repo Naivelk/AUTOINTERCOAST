@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoInspect</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Poppins:wght@300;400;500;600;700&family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: var(--app-font-primary), var(--app-font-secondary), sans-serif; /* Nueva tipografía principal */
+      background-color: #EFF2F7; /* Gris azulado muy claro para el fondo general */
+    }
+    /* Custom scrollbar for a cleaner look */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f1f1;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+
+    /* Paleta de Colores Institucional y Profesional */
+    :root {
+      /* Tipografía */
+      --app-font-primary: 'Inter', sans-serif;
+      --app-font-secondary: 'Poppins', sans-serif;
+      --app-font-fallback: 'Montserrat', sans-serif;
+
+      /* Colores Principales (Azules Suaves) */
+      --app-color-primary: #2563EB; /* Azul suave principal (Tailwind blue-600) */
+      --app-color-primary-dark: #1D4ED8; /* Azul suave principal más oscuro (Tailwind blue-700) */
+      --app-color-accent: #3B82F6; /* Azul suave de acento (Tailwind blue-500) */
+      --app-color-accent-dark: #2563EB; /* Azul suave de acento más oscuro (Tailwind blue-600) */
+      
+      /* Colores Neutros y de Interfaz */
+      --app-color-secondary-text: #4D4D4D; /* Gris profesional para texto */
+      --app-color-background: #F9FAFB; /* Blanco neutro/gris muy claro (Tailwind gray-50) */
+      --app-color-card-background: #FFFFFF; /* Blanco para tarjetas */
+      --app-color-input-background: #F3F4F6; /* Gris claro para campos de texto (Tailwind gray-100) */
+      --app-color-border: #D1D5DB; /* Gris claro para bordes sutiles (Tailwind gray-300) */
+      --app-color-input-border-focus: var(--app-color-primary);
+
+      /* Colores de Estado */
+      --app-color-success: #10B981; /* Verde (Tailwind green-500) */
+      --app-color-success-dark: #059669; /* Verde más oscuro (Tailwind green-600) */
+      --app-color-error: #EF4444; /* Rojo (Tailwind red-500) */
+      --app-color-error-dark: #DC2626; /* Rojo más oscuro (Tailwind red-600) */
+      --app-color-warning: #F59E0B; /* Ámbar (Tailwind amber-500) */
+
+      /* Textos Suaves */
+      --app-color-text-muted: #6B7280; /* Gris (Tailwind gray-500) */
+    }
+
+    .app-bg-primary { background-color: var(--app-color-primary); }
+    .app-text-primary { color: var(--app-color-primary); }
+    .app-border-primary { border-color: var(--app-color-primary); }
+
+    .app-text-secondary { color: var(--app-color-secondary-text); }
+
+    .app-bg-accent { background-color: var(--app-color-accent); }
+    .app-text-accent { color: var(--app-color-accent); }
+    .app-border-accent { border-color: var(--app-color-accent); }
+
+    .app-bg-success { background-color: var(--app-color-success); }
+    .app-text-success { color: var(--app-color-success); }
+
+    .app-bg-error { background-color: var(--app-color-error); }
+    .app-text-error { color: var(--app-color-error); }
+    
+    .app-bg-page { background-color: var(--app-color-background); }
+
+    .shadow-top-md {
+        box-shadow: 0 -4px 6px -1px rgb(0 0 0 / 0.1), 0 -2px 4px -2px rgb(0 0 0 / 0.1);
+    }
+    
+    /* Sombra suave para tarjetas */
+    .shadow-card-soft {
+      box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.05);
+    }
+
+    /* Estilo para un neumorfismo sutil en contenedores (no usado actualmente) */
+    .neumorphic-shadow-soft {
+      background-color: var(--app-color-background);
+      border-radius: 12px; /* Ajustar según el diseño */
+      box-shadow: 5px 5px 10px #d1d1d1, -5px -5px 10px #ffffff;
+    }
+    .neumorphic-inset-shadow {
+      background-color: var(--app-color-background); /* O un tono ligeramente más oscuro/claro */
+      border-radius: 12px;
+      box-shadow: inset 5px 5px 10px #d1d1d1, inset -5px -5px 10px #ffffff;
+    }
+
+  </style>
+
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
