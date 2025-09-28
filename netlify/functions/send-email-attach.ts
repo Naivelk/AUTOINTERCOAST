@@ -6,6 +6,9 @@ import { getStore } from '@netlify/blobs';
 // Timeout for Blobs API call (5 seconds)
 const BLOBS_TIMEOUT = 5000;
 
+// Timeout for email sending (15 seconds)
+const EMAIL_TIMEOUT = 15000;
+
 // Helper function to create a timeout promise
 const withTimeout = <T>(promise: Promise<T>, ms: number, timeoutMsg = 'Request timed out'): Promise<T> => {
   const timeout = new Promise<never>((_, reject) => 
@@ -49,30 +52,31 @@ export const handler: Handler = async (event) => {
       };
     }
 
-    const { to, key, filename, data } = body;
+    const { to, key, filename, data: base64Data } = body;
     console.log('Request received:', { 
       to: to ? '***' : 'missing', 
       filename: filename || 'missing',
       hasKey: !!key,
-      hasData: !!data
+      hasData: !!base64Data
     });
 
-    // Validate required environment variables
-    if (!process.env.RESEND_API_KEY) {
-      console.error('RESEND_API_KEY not set');
+    // Check for required environment variables
+    const fromEmail = process.env.RESEND_FROM_EMAIL || process.env.FROM_EMAIL;
+    const missing = [];
+    
+    if (!process.env.RESEND_API_KEY) missing.push('RESEND_API_KEY');
+    if (!fromEmail) missing.push('RESEND_FROM_EMAIL or FROM_EMAIL');
+    
+    if (missing.length > 0) {
+      console.error(`Missing required environment variables: ${missing.join(', ')}`);
       return {
         statusCode: 500,
         headers,
-        body: JSON.stringify({ error: 'Server configuration error' })
-      };
-    }
-
-    if (!process.env.RESEND_FROM_EMAIL) {
-      console.error('RESEND_FROM_EMAIL not set');
-      return {
-        statusCode: 500,
-        headers,
-        body: JSON.stringify({ error: 'Server configuration error' })
+        body: JSON.stringify({ 
+          error: 'server_configuration_error',
+          message: `Missing required configuration: ${missing.join(', ')}`,
+          missing: missing
+        })
       };
     }
 
@@ -103,7 +107,11 @@ export const handler: Handler = async (event) => {
         
         // Add timeout to Blobs API call
         const blobReadPromise = store.get(key) as unknown as Promise<Uint8Array | null>;
-        const got = await withTimeout(blobReadPromise, BLOBS_TIMEOUT, 'Blobs read operation timed out');
+        const got = await withTimeout(
+          blobReadPromise, 
+          BLOBS_TIMEOUT, 
+          `Blobs read operation timed out after ${BLOBS_TIMEOUT}ms`
+        );
         
         if (got && got.length) {
           console.log('Successfully read', got.length, 'bytes from Blobs');
@@ -113,15 +121,15 @@ export const handler: Handler = async (event) => {
         }
       } catch (e: any) {
         console.warn('Failed to read from Blobs, falling back to base64 data:', e.message);
-        // Continue to fallback
+        // Continue to fallback to base64 data
       }
     }
 
     // 2) Fallback: Use base64 data from client if available
-    if ((!bytes || bytes.length === 0) && data) {
+    if ((!bytes || bytes.length === 0) && base64Data) {
       try {
         console.log('Using base64 data from client');
-        const clean = data.replace(/^data:.*;base64,/, '');
+        const clean = base64Data.replace(/^data:.*;base64,/, '');
         bytes = Buffer.from(clean, 'base64');
         console.log('Decoded', bytes?.length || 0, 'bytes from base64');
       } catch (e: any) {
@@ -142,54 +150,84 @@ export const handler: Handler = async (event) => {
       };
     }
 
-    // 3) Send email with Resend
+    // 3) Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(to)) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ 
+          error: 'invalid_email',
+          message: 'Invalid email address format'
+        })
+      };
+    }
+
+    // 4) Send email with Resend
     console.log('Preparing to send email to:', to);
     const resend = new Resend(process.env.RESEND_API_KEY);
     
-    try {
-      const { error } = await withTimeout(
-        resend.emails.send({
-          from: process.env.RESEND_FROM_EMAIL,
-          to,
-          subject: 'AutoInspect – Reporte de inspección',
-          html: `
-            <p>Adjuntamos el reporte de inspección.</p>
-            <p>Este es un correo automático, por favor no responda a este mensaje.</p>
-          `,
-          attachments: [{
-            filename,
-            content: Buffer.from(bytes),
-          }],
-        }),
-        15000 // 15 second timeout for email sending
-      );
+    // 5) Send email with attachment
+    // We've already validated that fromEmail is defined, so we can safely use non-null assertion
+    const emailData = {
+      from: fromEmail!,
+      to,
+      subject: 'AutoInspect – Reporte de inspección',
+      text: 'Adjuntamos el reporte de inspección.\n\nEste es un correo automático, por favor no responda a este mensaje.',
+      html: `
+        <p>Adjuntamos el reporte de inspección.</p>
+        <p>Este es un correo automático, por favor no responda a este mensaje.</p>
+      `,
+      attachments: [{
+        filename: filename.replace(/[^\w.\-]+/g, '_'),
+        content: Buffer.from(bytes),
+      }],
+    };
 
-      if (error) {
-        console.error('Resend API error:', error);
-        throw new Error('Failed to send email');
-      }
+    const { data: emailResponse, error } = await withTimeout(
+      resend.emails.send(emailData),
+      EMAIL_TIMEOUT,
+      `Email sending timed out after ${EMAIL_TIMEOUT}ms`
+    );
 
-      console.log('Email sent successfully to:', to);
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({ 
-          success: true,
-          message: 'Email sent successfully' 
-        })
-      };
-    } catch (e: any) {
-      console.error('Error sending email:', e);
-      throw new Error(`Failed to send email: ${e.message}`);
+    if (error) {
+      console.error('Resend API error:', error);
+      throw new Error(`Failed to send email: ${error.message}`);
     }
-  } catch (e: any) {
-    console.error('Error in send-email-attach:', e);
+
+    console.log('Email sent successfully to:', to);
     return {
-      statusCode: 500,
+      statusCode: 200,
       headers,
       body: JSON.stringify({ 
-        error: 'Internal server error',
-        message: e.message 
+        success: true,
+        message: 'Email sent successfully',
+        emailId: emailResponse?.id,
+        usedFallback: !key || !bytes
+      })
+    };
+  } catch (e: any) {
+    console.error('Error in send-email-attach:', e);
+    
+    // Determine status code based on error type
+    let statusCode = 500;
+    let errorCode = 'internal_server_error';
+    
+    if (e.message.includes('timed out')) {
+      statusCode = 504;
+      errorCode = 'request_timeout';
+    } else if (e.message.toLowerCase().includes('invalid email')) {
+      statusCode = 400;
+      errorCode = 'invalid_email';
+    }
+    
+    return {
+      statusCode,
+      headers,
+      body: JSON.stringify({ 
+        error: errorCode,
+        message: e.message,
+        requestId: event.headers['x-nf-request-id'] || 'unknown'
       })
     };
   }

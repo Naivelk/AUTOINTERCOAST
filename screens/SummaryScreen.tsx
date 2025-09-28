@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Modal from 'react-modal';
 import { InspectionContext } from '../App';
-import { generatePdfBlobUrl } from '../services/pdfGenerator';
+import { generatePdfBlob } from '../services/pdfGenerator';
 import { saveInspection } from '../services/inspectionService';
 
 // Tipos
@@ -126,13 +126,19 @@ const SummaryScreen: React.FC = () => {
     if (!currentInspection) return;
     setIsGeneratingPdf(true);
     try {
-      const pdfUrl = await generatePdfBlobUrl(currentInspection as any);
+      const blob = await generatePdfBlob(currentInspection as any);
+      const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = pdfUrl;
+      link.href = url;
       link.download = `inspection-${currentInspection.id || Date.now()}.pdf`;
       document.body.appendChild(link);
       link.click();
-      document.body.removeChild(link);
+      
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 0);
 
       setModalTitle('PDF Generated');
       setModalMessage('The PDF has been generated and downloaded successfully. Would you like to email it?');
@@ -144,6 +150,32 @@ const SummaryScreen: React.FC = () => {
       setShowSuccessModal(true);
     } finally {
       setIsGeneratingPdf(false);
+    }
+  };
+
+  // Helper para reintentos con backoff
+  const fetchWithRetry = async (url: string, options: RequestInit = {}, retries = 2, backoff = 600): Promise<Response> => {
+    const merged: RequestInit = {
+      keepalive: true, // 👈 útil en móvil
+      headers: { 'content-type': 'application/json', ...(options.headers || {}) },
+      ...options,
+    };
+    
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+      
+      const response = await fetch(url, {
+        ...merged,
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error) {
+      if (retries <= 0) throw error;
+      await new Promise(r => setTimeout(r, backoff));
+      return fetchWithRetry(url, merged, retries - 1, backoff * 2);
     }
   };
 
@@ -159,6 +191,12 @@ const SummaryScreen: React.FC = () => {
       return;
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      throw new Error('La operación tardó demasiado tiempo. Intenta de nuevo.');
+    }, 30000); // 30s timeout
+
     setIsSendingEmail(true);
     setModalTitle('Enviando correo...');
     setModalMessage('Estamos preparando el informe. Por favor, espera...');
@@ -166,6 +204,7 @@ const SummaryScreen: React.FC = () => {
 
     const fail = (msg: string, err?: unknown) => {
       console.error('Email error:', err);
+      clearTimeout(timeoutId);
       setModalTitle('Error');
       setModalMessage(msg);
       setShowSuccessModal(true);
@@ -173,49 +212,59 @@ const SummaryScreen: React.FC = () => {
     };
 
     try {
+      // 1. Generar PDF directo como Blob
       addDebugLog('Generando PDF...');
-      const pdfUrl = await generatePdfBlobUrl(currentInspection as any);
+      const blob = await generatePdfBlob(currentInspection as any);
+      addDebugLog(`PDF generado (${(blob.size / (1024 * 1024)).toFixed(2)} MB)`);
 
-      addDebugLog('Descargando PDF (blob)…');
-      const r = await fetch(pdfUrl);
-      if (!r.ok) return fail('No se pudo obtener el PDF generado');
-      const blob = await r.blob();
-      addDebugLog(`PDF ok (${(blob.size / (1024 * 1024)).toFixed(2)} MB)`);
-
-      addDebugLog('Convirtiendo a base64…');
+      // 2. Convertir a base64
+      addDebugLog('Convirtiendo a base64...');
       const base64 = await blobToBase64(blob);
-
       const filename = `inspeccion_${currentInspection.policyNumber || 'sin_poliza'}_${Date.now()}.pdf`;
 
-      addDebugLog('Subiendo con upload-report…');
-      const upRes = await fetch('/.netlify/functions/upload-report', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ filename, data: base64 }),
-        credentials: 'same-origin',
-      });
-      if (!upRes.ok) return fail(`Error subiendo el PDF (${upRes.status})`, await upRes.text());
-      const { key } = await upRes.json();
-      if (!key) return fail('Respuesta inválida de upload-report (falta key)');
-
-      addDebugLog('Enviando email con send-email-attach…');
-
-      console.log('[MAIL] filename:', filename);
-console.log('[MAIL] key:', key || '(sin key)');
-console.log('[MAIL] base64 length:', base64?.length ?? 0);
-
-      const mailRes = await fetch('/.netlify/functions/send-email-attach', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ to: email, key, filename}),
-        credentials: 'same-origin',
-      });
-      if (!mailRes.ok) {
-        const txt = await mailRes.text();
-        return fail(txt || 'Error enviando el correo');
+      // 4. Subir a Netlify Blobs
+      let key: string | null = null;
+      try {
+        addDebugLog('Subiendo a Netlify Blobs...');
+        const upRes = await fetchWithRetry('/.netlify/functions/upload-report', {
+          method: 'POST',
+          body: JSON.stringify({ filename, data: base64 }),
+          credentials: 'same-origin',
+        });
+        
+        if (upRes.ok) {
+          const result = await upRes.json();
+          key = result.key;
+          addDebugLog(`Archivo subido con clave: ${key}`);
+        } else {
+          const errorText = await upRes.text();
+          console.warn('Error subiendo a Blobs, usando fallback a base64:', errorText);
+        }
+      } catch (e) {
+        console.warn('Error en subida a Blobs, usando fallback a base64:', e);
       }
 
-      // Persistir inspección
+      // 5. Enviar email con PDF adjunto
+      addDebugLog('Enviando email...');
+      const mailPayload = {
+        to: email,
+        filename: filename.replace(/[^\w.\-]+/g, '_'),
+        ...(key && { key }), // Solo incluir key si existe
+        data: base64, // Siempre incluir datos base64 como respaldo
+      };
+
+      const mailRes = await fetchWithRetry('/.netlify/functions/send-email-attach', {
+        method: 'POST',
+        body: JSON.stringify(mailPayload),
+        credentials: 'same-origin',
+      });
+
+      if (!mailRes.ok) {
+        const error = await mailRes.json().catch(() => ({}));
+        throw new Error(error.message || 'Error al enviar el correo');
+      }
+
+      // 6. Guardar estado de la inspección
       const updated = {
         ...currentInspection,
         id: currentInspection.id || `inspection_${Date.now()}`,
@@ -225,19 +274,27 @@ console.log('[MAIL] base64 length:', base64?.length ?? 0);
         pdfGenerated: true,
         updatedAt: new Date().toISOString()
       };
+      
       await saveInspection(updated);
 
+      // 7. Éxito
+      clearTimeout(timeoutId);
       addDebugLog('¡Correo enviado con éxito!');
       setModalTitle('¡Éxito!');
       setModalMessage('El correo se ha enviado correctamente con el PDF adjunto.');
       setShowSuccessModal(true);
       setShowEmailModal(false);
     } catch (e: any) {
+      console.error('Error en el proceso de envío:', e);
       let msg = e?.message || 'Ocurrió un error enviando el correo';
-      if (/Failed to fetch/i.test(msg)) msg = 'No se pudo conectar con el servidor. Verifica tu conexión.';
-      if (/timeout/i.test(msg)) msg = 'La operación tardó demasiado tiempo. Intenta de nuevo.';
+      if (e.name === 'AbortError' || /timeout/i.test(msg)) {
+        msg = 'La operación tardó demasiado tiempo. Por favor, inténtalo de nuevo.';
+      } else if (/Failed to fetch/i.test(msg)) {
+        msg = 'No se pudo conectar con el servidor. Verifica tu conexión a internet.';
+      }
       fail(msg, e);
     } finally {
+      clearTimeout(timeoutId);
       setIsSendingEmail(false);
     }
   };

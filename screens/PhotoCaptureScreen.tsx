@@ -6,8 +6,9 @@ import PageContainer from '../components/PageContainer.tsx';
 import Button from '../components/Button.tsx';
 import WizardSteps from '../components/WizardSteps.tsx';
 import PhotoUploadCard from '../components/PhotoUploadCard.tsx';
-import { InspectionStep, PhotoCategoryKey, AllPhotoCategoryKeys, Photo, Vehicle } from '../types.ts';
+import { InspectionStep, PhotoCategoryKey, AllPhotoCategoryKeys, Photo } from '../types.ts';
 import { MAX_FILE_SIZE_BYTES } from '../constants.ts';
+import { compressImageFile } from '../services/imageCompression';
 
 
 const PhotoCaptureScreen: React.FC = () => {
@@ -37,11 +38,11 @@ const PhotoCaptureScreen: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentInspection.agentName, currentInspection.vehicles, navigate, setCurrentStep]);
 
-  const handlePhotoChange = (vehicleIndex: number, photoSlotId: string, file: File | null) => {
+  const handlePhotoChange = async (vehicleIndex: number, photoSlotId: string, file: File | null) => {
     const errorKey = `${vehicleIndex}_${photoSlotId}`;
     
     if (file) {
-       if (file.size > MAX_FILE_SIZE_BYTES) {
+      if (file.size > MAX_FILE_SIZE_BYTES) {
         setPhotoErrors(prev => ({ ...prev, [errorKey]: `File exceeds max size.` }));
         setCurrentInspection(prevInsp => {
           const updatedVehicles = [...prevInsp.vehicles];
@@ -58,26 +59,27 @@ const PhotoCaptureScreen: React.FC = () => {
         return;
       }
 
-      const reader = new FileReader();
-      reader.onloadend = () => {
+      try {
+        // Compress and standardize to JPEG
+        const compressedDataUrl = await compressImageFile(file, 1600, 0.72);
+
         setCurrentInspection(prevInsp => {
           const updatedVehicles = [...prevInsp.vehicles];
           const targetVehicle = updatedVehicles[vehicleIndex];
           if (targetVehicle && targetVehicle.photos[photoSlotId as PhotoCategoryKey]) {
             targetVehicle.photos[photoSlotId as PhotoCategoryKey] = {
               ...targetVehicle.photos[photoSlotId as PhotoCategoryKey]!,
-              base64: reader.result as string,
-              file: file, 
+              base64: compressedDataUrl,
+              file: null, // We don't need to store the original File object
             };
           }
           return { ...prevInsp, vehicles: updatedVehicles };
         });
         setPhotoErrors(prev => ({ ...prev, [errorKey]: null }));
-      };
-      reader.onerror = () => {
-         setPhotoErrors(prev => ({ ...prev, [errorKey]: "Error reading file." }));
-      };
-      reader.readAsDataURL(file);
+      } catch (e) {
+        console.error('Error compressing image:', e);
+        setPhotoErrors(prev => ({ ...prev, [errorKey]: "Error processing image." }));
+      }
     } else { // File is null (removed)
       setCurrentInspection(prevInsp => {
         const updatedVehicles = [...prevInsp.vehicles];

@@ -1004,7 +1004,12 @@ const generatePdfContent = async (doc: jsPDF, inspection: SavedInspection): Prom
   }
 };
 
-export const generatePdfBlobUrl = async (inspection: SavedInspection): Promise<string> => {
+/**
+ * Generates a PDF and returns it as a Blob
+ * @param inspection The inspection data
+ * @returns A promise that resolves to a Blob containing the PDF
+ */
+export const generatePdfBlob = async (inspection: SavedInspection): Promise<Blob> => {
   const doc = new jsPDF({ 
     orientation: 'p', 
     unit: 'pt', 
@@ -1012,36 +1017,30 @@ export const generatePdfBlobUrl = async (inspection: SavedInspection): Promise<s
   });
   
   try {
-    // Generate PDF content (including header with logo)
     await generatePdfContent(doc, inspection);
     
-    // Add footer to all pages
     const pageCount = doc.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
       addFooter(doc, inspection);
     }
     
-    // Generate and return the blob URL
-    const pdfBlob = doc.output('blob');
-    return URL.createObjectURL(pdfBlob);
+    return doc.output('blob');
   } catch (error) {
     console.error('Error generating PDF:', error);
-    // Return a minimal error PDF
-    const errorDoc = new jsPDF();
-    errorDoc.setFontSize(12);
-    errorDoc.text('Error generating PDF. Please try again.', 20, 20);
-    const errorBlob = errorDoc.output('blob');
-    return URL.createObjectURL(errorBlob);
+    // Create a minimal error PDF
+    const errorDoc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
+    errorDoc.text('Error generating PDF. Please try again.', 40, 40);
+    return errorDoc.output('blob');
   }
 };
 
 // Función de compatibilidad para el código existente
 export const generatePdf = async (inspection: SavedInspection): Promise<void> => {
-  let url: string | null = null;
   try {
-    // Generate PDF and get blob URL
-    url = await generatePdfBlobUrl(inspection);
+    // Generate PDF and get blob
+    const blob = await generatePdfBlob(inspection);
+    const url = URL.createObjectURL(blob);
     
     // Create and trigger download
     const link = document.createElement('a');
@@ -1053,12 +1052,11 @@ export const generatePdf = async (inspection: SavedInspection): Promise<void> =>
     // Clean up
     setTimeout(() => {
       document.body.removeChild(link);
-      if (url) URL.revokeObjectURL(url);
+      URL.revokeObjectURL(url);
     }, 0);
   } catch (error) {
     console.error('Error generating PDF:', error);
-    // Ensure URL is cleaned up even if there's an error
-    if (url) URL.revokeObjectURL(url);
+    // No need to clean up URL here as it's only created in the try block
     throw error;
   }
 };

@@ -1,11 +1,11 @@
 // netlify/functions/upload-report.ts
 import type { Handler } from '@netlify/functions';
 
-// Timeout for API calls (10 seconds)
-const API_TIMEOUT = 10000;
+// Timeout for API calls (30 seconds)
+const API_TIMEOUT = 30000;
 
-// Maximum file size (5MB)
-const MAX_FILE_SIZE = 5 * 1024 * 1024;
+// Maximum file size (8MB)
+const MAX_FILE_SIZE = 8 * 1024 * 1024;
 
 // Helper function to create a timeout promise
 const withTimeout = <T>(promise: Promise<T>, ms: number, timeoutMsg = 'Request timed out'): Promise<T> => {
@@ -93,28 +93,30 @@ export const handler: Handler = async (event) => {
 
       if (!siteID || !token) {
         console.warn('Netlify Blobs not configured - missing SITE_ID or NETLIFY_API_TOKEN');
+        console.warn('Falling back to base64 mode - this is OK for development but should be fixed in production');
         return {
           statusCode: 500,
           headers,
           body: JSON.stringify({ 
-            error: 'Server configuration error',
-            message: 'Blob storage is not configured'
+            error: 'server_configuration_error',
+            message: 'Blob storage is not configured',
+            fallback: true
           })
         };
       }
 
-      // Generate a unique key for the blob
+      // Generate a unique key for the blob with safe filename
       const store = 'reports';
+      const safeFilename = filename.replace(/[^\w.\-]+/g, '_');
       const key = `${store}/${Date.now()}-${Math.random()
         .toString(36)
-        .substring(2, 10)}-${filename.replace(/[^\w.-]/g, '_')}`;
+        .substring(2, 10)}-${safeFilename}`;
 
       console.log(`Uploading file ${filename} (${bytes.length} bytes) to ${key}`);
 
-      // Upload to Netlify Blobs via REST API
-      const apiUrl = `https://api.netlify.com/api/v1/sites/${siteID}/blobs/${store}/${encodeURIComponent(
-        key.replace(`${store}/`, '')
-      )}`;
+      // Upload to Netlify Blobs via REST API with proper encoding
+      const blobKey = key.replace(`${store}/`, '');
+      const apiUrl = `https://api.netlify.com/api/v1/sites/${siteID}/blobs/${store}/${encodeURIComponent(blobKey)}`;
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT);
@@ -161,11 +163,16 @@ export const handler: Handler = async (event) => {
         clearTimeout(timeoutId);
         
         if (e.name === 'AbortError') {
-          console.error('Upload timed out');
+          console.error(`Upload timed out after ${API_TIMEOUT}ms`);
           return {
             statusCode: 504,
             headers,
-            body: JSON.stringify({ error: 'Upload timed out' })
+            body: JSON.stringify({ 
+              error: 'upload_timeout',
+              message: `Upload timed out after ${API_TIMEOUT/1000} seconds`,
+              limit: MAX_FILE_SIZE,
+              timeout: API_TIMEOUT
+            })
           };
         }
         
@@ -186,15 +193,11 @@ export const handler: Handler = async (event) => {
     console.error('Error in upload-report:', e);
     return {
       statusCode: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
+      headers,
       body: JSON.stringify({ 
-        error: 'Internal server error',
-        message: e.message 
+        error: 'internal_server_error',
+        message: 'An unexpected error occurred while processing your request',
+        requestId: event.headers['x-nf-request-id'] || 'unknown'
       })
     };
   }

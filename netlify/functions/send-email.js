@@ -3,24 +3,26 @@ const { Resend } = require('resend');
 console.log('Iniciando función send-email');
 
 // Mostrar las variables de entorno disponibles (sin valores sensibles)
+const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || process.env.FROM_EMAIL;
+
 console.log('Verificando configuración de entorno en send-email:', {
   RESEND_API_KEY: process.env.RESEND_API_KEY ? '***' : 'No definida',
+  RESEND_FROM_EMAIL: process.env.RESEND_FROM_EMAIL ? '***' : 'No definida',
   FROM_EMAIL: process.env.FROM_EMAIL ? '***' : 'No definida',
   NODE_ENV: process.env.NODE_ENV || 'development',
-  status: process.env.RESEND_API_KEY && process.env.FROM_EMAIL ? 'Configuración válida' : 'Faltan variables de entorno'
+  status: process.env.RESEND_API_KEY && FROM_EMAIL ? 'Configuración válida' : 'Faltan variables de entorno'
 });
 
 // Verificar las variables de entorno
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_EMAIL = process.env.FROM_EMAIL;
 
 if (!RESEND_API_KEY || !FROM_EMAIL) {
-  console.error('ERROR: Faltan variables de entorno requeridas');
-  throw new Error('Configuración incompleta');
-}
-
-if (!RESEND_API_KEY) {
-  console.error('ERROR: RESEND_API_KEY no está definida');
+  const missing = [];
+  if (!RESEND_API_KEY) missing.push('RESEND_API_KEY');
+  if (!FROM_EMAIL) missing.push('RESEND_FROM_EMAIL o FROM_EMAIL');
+  
+  console.error(`ERROR: Faltan variables de entorno requeridas: ${missing.join(', ')}`);
+  throw new Error(`Configuración incompleta: ${missing.join(', ')}`);
 }
 
 // Inicializar el cliente de Resend
