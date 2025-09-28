@@ -199,7 +199,7 @@ const SummaryScreen: React.FC = () => {
       if (!key) return fail('Respuesta inválida de upload-report (falta key)');
 
       addDebugLog('Enviando email con send-email-attach…');
-      
+
       console.log('[MAIL] filename:', filename);
 console.log('[MAIL] key:', key || '(sin key)');
 console.log('[MAIL] base64 length:', base64?.length ?? 0);
@@ -207,9 +207,7 @@ console.log('[MAIL] base64 length:', base64?.length ?? 0);
       const mailRes = await fetch('/.netlify/functions/send-email-attach', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        // Enviamos key + data (base64). El server intentará leer Blobs y si no,
-        // usa el base64 como fallback (lo que ya vimos 200 OK en Postman).
-        body: JSON.stringify({ to: email, key, filename, data: base64 }),
+        body: JSON.stringify({ to: email, key, filename}),
         credentials: 'same-origin',
       });
       if (!mailRes.ok) {
