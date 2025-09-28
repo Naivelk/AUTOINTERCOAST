@@ -1,97 +1,83 @@
-﻿// netlify/functions/send-email-attach.ts
+// netlify/functions/send-email-attach.ts
 import type { Handler } from '@netlify/functions';
-import { getStore } from '@netlify/blobs';
 import { Resend } from 'resend';
-
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Content-Type': 'application/json',
-};
+import { getStore } from '@netlify/blobs';
 
 export const handler: Handler = async (event) => {
   try {
-    if (event.httpMethod === 'OPTIONS') {
-      return { statusCode: 200, headers: CORS, body: '' };
-    }
     if (event.httpMethod !== 'POST') {
-      return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: 'Method Not Allowed' }) };
+      return { statusCode: 405, body: 'Method Not Allowed' };
     }
 
-    const RESEND_API_KEY = process.env.RESEND_API_KEY;
-    const FROM_EMAIL = process.env.RESEND_FROM_EMAIL;
-    if (!RESEND_API_KEY || !FROM_EMAIL) {
-      return {
-        statusCode: 500,
-        headers: CORS,
-        body: JSON.stringify({ error: !FROM_EMAIL ? 'RESEND_FROM_EMAIL not set' : 'RESEND_API_KEY not set' }),
-      };
-    }
+    const { to, key, filename, data } = JSON.parse(event.body || '{}') as {
+      to?: string;
+      key?: string;       // clave del blob (opcional si mandas data)
+      filename?: string;
+      data?: string;      // base64 opcional (fallback si no hay Blobs)
+    };
 
-    const { to, key, filename = 'inspection.pdf', data } = event.body ? JSON.parse(event.body) : {};
-    if (!to) {
-      return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'Missing "to"' }) };
-    }
+    // Validaciones de entorno
+    if (!process.env.RESEND_API_KEY) throw new Error('RESEND_API_KEY not set');
+    if (!process.env.RESEND_FROM_EMAIL) throw new Error('RESEND_FROM_EMAIL not set');
 
-    // Preparar el buffer del PDF
-    let buffer: Buffer | null = null;
+    // Validaciones de payload
+    if (!to) throw new Error('Missing "to"');
+    if (!filename) throw new Error('Missing "filename"');
 
-    // 1) Intentar leer desde Netlify Blobs si viene "key"
+    let bytes: Uint8Array | null = null;
+
+    // 1) Intentar leer el PDF desde Netlify Blobs si se envió "key"
     if (key) {
       try {
-        const store = getStore('reports'); // en Netlify prod no requiere credenciales
-        const arr = await store.get(key, { type: 'arrayBuffer' });
-        if (arr) buffer = Buffer.from(arr);
+        const store = getStore('reports'); // mismo nombre que usa upload-report
+        const got = (await store.get(key)) as unknown as Uint8Array | null;
+        if (got && got.length) bytes = got;
       } catch (e: any) {
-        // Si Blobs no está configurado todavía, caemos al fallback "data"
-        console.warn('Blobs no disponible o sin credenciales, se usará fallback base64 si fue provisto:', e?.message);
+        // Si el runtime no tiene Blobs configurado, seguimos con el fallback
+        console.warn('Blobs no disponible en runtime, usaré data base64 si viene:', e?.message);
       }
     }
 
-    // 2) Fallback: si no logramos tener buffer y viene "data" base64, úsalo
-    if (!buffer && data) {
-      const base64 = String(data).replace(/^data:.*;base64,/, '');
-      buffer = Buffer.from(base64, 'base64');
+    // 2) Fallback: si no pudimos leer del store, usar base64 del cliente
+    if (!bytes && data) {
+      const clean = data.replace(/^data:.*;base64,/, '');
+      bytes = Buffer.from(clean, 'base64');
     }
 
-    if (!buffer) {
+    // Si aún no tenemos bytes, devolvemos error claro
+    if (!bytes) {
       return {
         statusCode: 400,
-        headers: CORS,
-        body: JSON.stringify({ error: 'No file provided. Expected "key" (Netlify Blobs) or "data" (base64)' }),
+        body: 'No PDF bytes available (ni key válida ni data base64)',
       };
     }
 
-    const resend = new Resend(RESEND_API_KEY);
-    const res = await resend.emails.send({
-      from: FROM_EMAIL,
+    // 3) Enviar email con Resend
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const { error } = await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL!,
       to,
-      subject: 'Reporte de inspección',
-      html: '<p>Adjunto encontrarás tu PDF.</p>',
+      subject: 'AutoInspect – Reporte de inspección',
+      html: `<p>Adjuntamos el reporte de inspección.</p>`,
       attachments: [
         {
           filename,
-          content: buffer,
-          contentType: 'application/pdf',
+          content: Buffer.from(bytes), // Resend acepta Buffer
         },
       ],
     });
 
-    if ((res as any)?.error) {
-      return {
-        statusCode: 502,
-        headers: CORS,
-        body: JSON.stringify({ error: (res as any).error?.message || 'Resend error' }),
-      };
+    if (error) {
+      console.error('Resend error:', error);
+      return { statusCode: 500, body: 'Resend failed' };
     }
 
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
   } catch (e: any) {
     console.error('send-email-attach error:', e);
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: e?.message || 'internal error' }) };
+    return { statusCode: 500, body: e?.message || 'internal error' };
   }
 };
 
-// Fallback CommonJS (por si el runtime lo requiere)
+// Fallback CommonJS por si el runtime lo requiere
 ;(module as any).exports = { handler };

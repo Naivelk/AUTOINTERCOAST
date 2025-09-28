@@ -199,6 +199,11 @@ const SummaryScreen: React.FC = () => {
       if (!key) return fail('Respuesta inválida de upload-report (falta key)');
 
       addDebugLog('Enviando email con send-email-attach…');
+      
+      console.log('[MAIL] filename:', filename);
+console.log('[MAIL] key:', key || '(sin key)');
+console.log('[MAIL] base64 length:', base64?.length ?? 0);
+
       const mailRes = await fetch('/.netlify/functions/send-email-attach', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
