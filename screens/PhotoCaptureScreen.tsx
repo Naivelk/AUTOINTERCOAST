@@ -1,4 +1,3 @@
-
 import React, { useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { InspectionContext } from '../App.tsx';
@@ -8,8 +7,7 @@ import WizardSteps from '../components/WizardSteps.tsx';
 import PhotoUploadCard from '../components/PhotoUploadCard.tsx';
 import { InspectionStep, PhotoCategoryKey, AllPhotoCategoryKeys, Photo } from '../types.ts';
 import { MAX_FILE_SIZE_BYTES } from '../constants.ts';
-import { compressImageFile } from '../services/imageCompression';
-
+import * as imgc from '../services/imageCompression';// 👈 import a prueba de balas
 
 const PhotoCaptureScreen: React.FC = () => {
   const context = useContext(InspectionContext);
@@ -25,8 +23,8 @@ const PhotoCaptureScreen: React.FC = () => {
 
   const activeVehicle = currentInspection.vehicles[currentVehicleIndex];
 
-  const [photoErrors, setPhotoErrors] = useState<Record<string, string | null>>({}); // Keyed by vehicleIndex_photoSlotId
-
+  // Keyed by `${vehicleIndex}_${photoSlotId}`
+  const [photoErrors, setPhotoErrors] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     // Basic check to ensure user came from new-inspection screen with minimal data
@@ -38,7 +36,11 @@ const PhotoCaptureScreen: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentInspection.agentName, currentInspection.vehicles, navigate, setCurrentStep]);
 
-  const handlePhotoChange = async (vehicleIndex: number, photoSlotId: string, file: File | null) => {
+  const handlePhotoChange = async (
+    vehicleIndex: number,
+    photoSlotId: PhotoCategoryKey,   // 👈 tipamos el slot
+    file: File | null
+  ) => {
     const errorKey = `${vehicleIndex}_${photoSlotId}`;
     
     if (file) {
@@ -47,9 +49,9 @@ const PhotoCaptureScreen: React.FC = () => {
         setCurrentInspection(prevInsp => {
           const updatedVehicles = [...prevInsp.vehicles];
           const targetVehicle = updatedVehicles[vehicleIndex];
-          if (targetVehicle && targetVehicle.photos[photoSlotId as PhotoCategoryKey]) {
-            targetVehicle.photos[photoSlotId as PhotoCategoryKey] = {
-              ...targetVehicle.photos[photoSlotId as PhotoCategoryKey]!,
+          if (targetVehicle && targetVehicle.photos[photoSlotId]) {
+            targetVehicle.photos[photoSlotId] = {
+              ...targetVehicle.photos[photoSlotId]!,
               base64: null,
               file: null,
             };
@@ -61,14 +63,14 @@ const PhotoCaptureScreen: React.FC = () => {
 
       try {
         // Compress and standardize to JPEG
-        const compressedDataUrl = await compressImageFile(file, 1600, 0.72);
+        const compressedDataUrl = await imgc.compressImageFile(file, 1600, 0.72); // 👈 uso vía namespace
 
         setCurrentInspection(prevInsp => {
           const updatedVehicles = [...prevInsp.vehicles];
           const targetVehicle = updatedVehicles[vehicleIndex];
-          if (targetVehicle && targetVehicle.photos[photoSlotId as PhotoCategoryKey]) {
-            targetVehicle.photos[photoSlotId as PhotoCategoryKey] = {
-              ...targetVehicle.photos[photoSlotId as PhotoCategoryKey]!,
+          if (targetVehicle && targetVehicle.photos[photoSlotId]) {
+            targetVehicle.photos[photoSlotId] = {
+              ...targetVehicle.photos[photoSlotId]!,
               base64: compressedDataUrl,
               file: null, // We don't need to store the original File object
             };
@@ -80,13 +82,14 @@ const PhotoCaptureScreen: React.FC = () => {
         console.error('Error compressing image:', e);
         setPhotoErrors(prev => ({ ...prev, [errorKey]: "Error processing image." }));
       }
-    } else { // File is null (removed)
+    } else {
+      // File is null (removed)
       setCurrentInspection(prevInsp => {
         const updatedVehicles = [...prevInsp.vehicles];
         const targetVehicle = updatedVehicles[vehicleIndex];
-        if (targetVehicle && targetVehicle.photos[photoSlotId as PhotoCategoryKey]) {
-          targetVehicle.photos[photoSlotId as PhotoCategoryKey] = {
-            ...targetVehicle.photos[photoSlotId as PhotoCategoryKey]!,
+        if (targetVehicle && targetVehicle.photos[photoSlotId]) {
+          targetVehicle.photos[photoSlotId] = {
+            ...targetVehicle.photos[photoSlotId]!,
             base64: null,
             file: null,
           };
@@ -115,10 +118,7 @@ const PhotoCaptureScreen: React.FC = () => {
       setCurrentVehicleIndex(currentVehicleIndex + 1);
     } else {
       // This is the last vehicle, so "Next Vehicle" acts like "Submit to Summary"
-      if (!validateAllPhotos()) {
-        // Alert is handled by validateAllPhotos
-        return;
-      }
+      if (!validateAllPhotos()) return;
       setCurrentStep(InspectionStep.SUMMARY);
       navigate('/summary');
     }
@@ -133,10 +133,7 @@ const PhotoCaptureScreen: React.FC = () => {
   };
 
   const handleSubmitToSummary = () => {
-    if (!validateAllPhotos()) {
-      // Alert is handled by validateAllPhotos
-      return;
-    }
+    if (!validateAllPhotos()) return;
     setCurrentStep(InspectionStep.SUMMARY);
     navigate('/summary');
   };
@@ -146,13 +143,16 @@ const PhotoCaptureScreen: React.FC = () => {
     return <div>Redirecting...</div>;
   }
 
-  const currentVehiclePhotoSlots: Photo[] = AllPhotoCategoryKeys.map(
-    catKey => activeVehicle.photos[catKey]
-  ).filter(Boolean) as Photo[];
+  const currentVehiclePhotoSlots: Photo[] = AllPhotoCategoryKeys
+    .map(catKey => activeVehicle.photos[catKey])
+    .filter(Boolean) as Photo[];
 
-  const vehicleInfoDisplayArray = [activeVehicle.make, activeVehicle.model, activeVehicle.year ? `(${activeVehicle.year})` : ''];
+  const vehicleInfoDisplayArray = [
+    activeVehicle.make,
+    activeVehicle.model,
+    activeVehicle.year ? `(${activeVehicle.year})` : ''
+  ];
   const vehicleInfoDisplay = vehicleInfoDisplayArray.filter(Boolean).join(' ').trim();
-
 
   return (
     <PageContainer 
@@ -173,7 +173,7 @@ const PhotoCaptureScreen: React.FC = () => {
             <PhotoUploadCard
               key={`${currentVehicleIndex}_${photoSlot.id}`}
               photoSlot={photoSlot}
-              onPhotoChange={(slotId, file) => handlePhotoChange(currentVehicleIndex, slotId, file)}
+              onPhotoChange={(slotId, file) => handlePhotoChange(currentVehicleIndex, slotId as PhotoCategoryKey, file)}
               errorMessage={photoErrors[`${currentVehicleIndex}_${photoSlot.id}`]}
             />
           )

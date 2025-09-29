@@ -1009,22 +1009,23 @@ const generatePdfContent = async (doc: jsPDF, inspection: SavedInspection): Prom
  * @param inspection The inspection data
  * @returns A promise that resolves to a Blob containing the PDF
  */
+
 export const generatePdfBlob = async (inspection: SavedInspection): Promise<Blob> => {
-  const doc = new jsPDF({ 
-    orientation: 'p', 
-    unit: 'pt', 
-    format: 'a4' 
+  const doc = new jsPDF({
+    orientation: 'p',
+    unit: 'pt',
+    format: 'a4'
   });
-  
+
   try {
     await generatePdfContent(doc, inspection);
-    
+
     const pageCount = doc.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
       addFooter(doc, inspection);
     }
-    
+
     return doc.output('blob');
   } catch (error) {
     console.error('Error generating PDF:', error);
@@ -1035,28 +1036,40 @@ export const generatePdfBlob = async (inspection: SavedInspection): Promise<Blob
   }
 };
 
-// Función de compatibilidad para el código existente
+// ✅ CIERRA AQUÍ la función generatePdf
 export const generatePdf = async (inspection: SavedInspection): Promise<void> => {
   try {
-    // Generate PDF and get blob
     const blob = await generatePdfBlob(inspection);
     const url = URL.createObjectURL(blob);
-    
-    // Create and trigger download
+
     const link = document.createElement('a');
     link.href = url;
     link.download = `inspeccion-${inspection.id || new Date().toISOString().slice(0, 10)}.pdf`;
     document.body.appendChild(link);
     link.click();
-    
-    // Clean up
+
     setTimeout(() => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     }, 0);
   } catch (error) {
     console.error('Error generating PDF:', error);
-    // No need to clean up URL here as it's only created in the try block
     throw error;
   }
+}; // ⬅️ ESTE `};` FALTABA
+
+// (Opcional) helper si algún día necesitas convertir un dataURL a Blob
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [header, base64] = dataUrl.split(',');
+  const mime = /data:(.*?);base64/.exec(header)?.[1] || 'application/pdf';
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+// ✅ NUEVA export que pide InspectionsListScreen.tsx
+export const generatePdfBlobUrl = async (inspection: SavedInspection): Promise<string> => {
+  const blob = await generatePdfBlob(inspection);
+  return URL.createObjectURL(blob);
 };
