@@ -226,19 +226,35 @@ const PhotoCaptureScreen: React.FC = () => {
         ))}
       </div>
 
-      <div className="mt-8 flex justify-between items-center p-1">
-        <Button onClick={handlePreviousVehicle} variant="outline">
-          {currentVehicleIndex === 0 ? 'Back to Details' : 'Previous Vehicle'}
-        </Button>
-        {currentVehicleIndex < currentInspection.vehicles.length - 1 ? (
-          <Button onClick={handleNextVehicle} size="lg">
-            Next Vehicle's Photos
+      <div className="sticky bottom-0 z-10 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-t p-4 mt-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Button 
+            variant="outline" 
+            className="w-full" 
+            onClick={handlePreviousVehicle}
+          >
+            {currentVehicleIndex === 0 ? 'Back to Details' : 'Previous Vehicle'}
           </Button>
-        ) : (
-          <Button onClick={handleSubmitToSummary} size="lg">
-            Next: Review Summary
-          </Button>
-        )}
+          {currentVehicleIndex < currentInspection.vehicles.length - 1 ? (
+            <Button 
+              variant="primary"
+              className="w-full" 
+              size="lg" 
+              onClick={handleNextVehicle}
+            >
+              Next Vehicle's Photos
+            </Button>
+          ) : (
+            <Button 
+              variant="primary"
+              className="w-full" 
+              size="lg" 
+              onClick={handleSubmitToSummary}
+            >
+              Next: Review Summary
+            </Button>
+          )}
+        </div>
       </div>
     </PageContainer>
   );

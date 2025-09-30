@@ -193,10 +193,42 @@ export const handler: Handler = async (event) => {
       from: fromEmail!,
       to,
       subject: 'AutoInspect – Reporte de inspección',
-      text: 'Adjuntamos el reporte de inspección.\n\nEste es un correo automático, por favor no responda a este mensaje.',
+      text: `Estimado/a,
+
+Se ha generado el informe de inspección solicitado. Por favor encuentre adjunto el documento en formato PDF con todos los detalles.
+
+Detalles de la inspección:
+- Fecha: ${new Date().toLocaleDateString('es-ES')}
+- Hora: ${new Date().toLocaleTimeString('es-ES')}
+
+Este es un mensaje automático generado por el sistema de gestión de inspecciones de INTERCOAST.
+
+--
+INTERCOAST
+Sistema de Gestión de Inspecciones`,
       html: `
-        <p>Adjuntamos el reporte de inspección.</p>
-        <p>Este es un correo automático, por favor no responda a este mensaje.</p>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <p>Estimado/a,</p>
+          
+          <p>Se ha generado el informe de inspección solicitado. Por favor encuentre adjunto el documento en formato PDF con todos los detalles.</p>
+          
+          <div style="background-color: #f5f5f5; padding: 15px; border-left: 4px solid #1D4ED8; margin: 15px 0;">
+            <p style="margin: 5px 0;"><strong>Detalles de la inspección:</strong></p>
+            <ul style="margin: 5px 0; padding-left: 20px;">
+              <li>Fecha: ${new Date().toLocaleDateString('es-ES')}</li>
+              <li>Hora: ${new Date().toLocaleTimeString('es-ES')}</li>
+            </ul>
+          </div>
+          
+          <p>Este es un mensaje automático generado por el sistema de gestión de inspecciones de <strong>INTERCOAST</strong>.</p>
+          
+          <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;">
+          
+          <p style="color: #666; font-size: 12px; margin: 0;">
+            INTERCOAST<br>
+            Sistema de Gestión de Inspecciones
+          </p>
+        </div>
       `,
       attachments: [{
         filename: safeFilename,

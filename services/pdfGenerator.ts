@@ -194,26 +194,29 @@ const PDF_OPTIONS: PdfOptions = {
  * @returns The height of the added image and whether a new page was added
  */
 /** Re-encodea la imagen al tamaño real que se dibujará en el PDF (y la pasa a JPEG) */
+type ReencodeOpts = {
+  format?: 'JPEG' | 'PNG';   // salida deseada
+  quality?: number;          // solo aplica a JPEG
+  forceWhiteBg?: boolean;    // útil para logos/transparencias
+};
+
 async function reencodeForPdf(
   dataUrl: string,
   targetW: number,
   targetH: number,
-  quality = 0.56 // 0.55–0.62 suele equilibrar bien
+  opts: ReencodeOpts = {}
 ): Promise<string> {
-  // Asegura JPEG (si viene PNG suele pesar más)
-  const ensureJpeg = (src: string) =>
-    src.startsWith('data:image/jpeg')
-      ? src
-      : src.replace(/^data:image\/png/, 'data:image/jpeg');
+  const { format = 'JPEG', quality = 0.58, forceWhiteBg = false } = opts;
 
+  // cargamos la imagen tal cual venga (png/jpg)
   const img = await new Promise<HTMLImageElement>((res, rej) => {
     const i = new Image();
     i.onload = () => res(i);
     i.onerror = () => rej(new Error('img load'));
-    i.src = ensureJpeg(dataUrl);
+    i.src = dataUrl;
   });
 
-  // Escala para que quepa en el rectángulo (manteniendo aspecto)
+  // mantener aspecto y encajar en el rectángulo
   const ratio = img.naturalWidth / img.naturalHeight;
   let w = targetW;
   let h = Math.round(targetW / ratio);
@@ -228,9 +231,16 @@ async function reencodeForPdf(
 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('no 2d');
+  if (forceWhiteBg) {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  (ctx as any).imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-  return canvas.toDataURL('image/jpeg', quality);
+  return format === 'PNG'
+    ? canvas.toDataURL('image/png')
+    : canvas.toDataURL('image/jpeg', quality);
 }
 
 const addImageWithCard = async (
@@ -266,13 +276,16 @@ const addImageWithCard = async (
     return { height: 100, newPage: false };
   }
 
-  // Special categories
-  const isSpecialImage =
-    photo.category &&
-    ['VIN Number', 'Vehicle Registration', 'Owner ID'].includes(photo.category);
+  // Detect document photos for special handling
+  const labelLc = ((photo.category ?? photo.name) ?? '').toLowerCase().trim();
+  const isDocPhoto =
+    labelLc === 'vin number' ||
+    labelLc === 'vehicle registration' ||
+    labelLc === 'owner id';
 
-  const minImageWidth = isSpecialImage ? 300 : 250;
-  const minImageHeight = isSpecialImage ? 250 : 200;
+  // Set minimum dimensions based on photo type
+  const minImageWidth = isDocPhoto ? 380 : 250;
+  const minImageHeight = isDocPhoto ? 290 : 200;
   const availableImageWidth = Math.max(width - PDF_OPTIONS.IMAGE_PADDING * 2, minImageWidth);
 
   // Original dimensions
@@ -355,18 +368,20 @@ const addImageWithCard = async (
   const imageX = x + (width - finalRenderWidth) / 2;
   const imageY = y + PDF_OPTIONS.IMAGE_PADDING;
 
-  // Determine image format
-
-// Re-encodeamos al tamaño REAL que se va a dibujar (reduce muchísimo el peso)
+  // Re-encodeamos al tamaño REAL que se va a dibujar.
+// Para documentos subimos un poco la calidad (texto nítido).
 const embedDataUrl = await reencodeForPdf(
   imageData,
   Math.round(finalRenderWidth),
   Math.round(finalRenderHeight),
-  0.58 // ajusta 0.55–0.62 si quieres más/menos peso
+  {
+    format: 'JPEG',
+    quality: isDocPhoto ? 0.70 : 0.58,
+    // forceWhiteBg: false
+  }
 );
 
 try {
-  // Ya es JPEG y del tamaño exacto; podemos fijar formato a 'JPEG'
   doc.addImage(
     embedDataUrl,
     'JPEG',
@@ -375,11 +390,15 @@ try {
     finalRenderWidth,
     finalRenderHeight,
     undefined,
-    'FAST' // ✅
+    isDocPhoto ? 'MEDIUM' : 'FAST'
   );
-
 } catch (error) {
-  // ... deja tu bloque catch como lo tienes (placeholder)
+  console.error('Error adding image to PDF:', error);
+  doc.setFillColor(240, 240, 240);
+  doc.rect(imageX, imageY, finalRenderWidth, finalRenderHeight, 'F');
+  doc.setTextColor(200, 0, 0);
+  doc.setFontSize(10);
+  doc.text('Error loading image', imageX + 5, imageY + 12);
 }
 
 
@@ -395,6 +414,7 @@ try {
 
     doc.setFillColor(255, 255, 255);
     doc.rect(imageX, captionY, finalRenderWidth, captionHeightPx, 'F');
+
 
     doc.setFontSize(PDF_OPTIONS.CAPTION_FONT_SIZE);
     doc.setTextColor(0, 0, 0);
@@ -688,7 +708,7 @@ const addVehicleInfoCard = (
 };
 
 // Add the header with inspection details
-const addHeader = (doc: jsPDF, inspection: SavedInspection, state: PdfState, logoDataUrl?: string): number => {
+const addHeader = async (doc: jsPDF, inspection: SavedInspection, state: PdfState, logoDataUrl?: string): Promise<number> => {
   const { currentY, contentX } = state;
   const headerHeight = PDF_OPTIONS.HEADER_HEIGHT;
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -714,45 +734,75 @@ const addHeader = (doc: jsPDF, inspection: SavedInspection, state: PdfState, log
     // Add logo (left side) or fallback to text
     if (logoDataUrl) {
       // Add logo with optimized dimensions
-      const logoHeight = 26;  // Reduced from 32
-      const logoWidth = 80;   // Reduced from 100
+      const logoHeight = 35;  // Tamaño ajustado
+      const logoWidth = 110;  // Manteniendo proporción
       
       try {
-        doc.addImage(
+        const embedDataUrl = await reencodeForPdf(
           logoDataUrl,
-          'JPEG',  // Now using JPEG for better compression
+          Math.round(logoWidth),
+          Math.round(logoHeight),
+          {
+            format: 'JPEG',
+            quality: 0.75,
+          }
+        );
+
+        doc.addImage(
+          embedDataUrl,
+          'JPEG',
           contentX,
-          14, // Y position
+          12, // Posición Y ligeramente más arriba
           logoWidth,
           logoHeight,
           undefined,
-          'FAST'
+          'MEDIUM'
         );
       } catch (error) {
         console.error('Error adding logo to PDF:', error);
         // Fallback to text if logo fails to load
-        doc.setFontSize(PDF_OPTIONS.FONT_SIZE_HEADER);
+        doc.setFontSize(16);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(PDF_OPTIONS.COLOR_WHITE);
         doc.text('AutoInspect', contentX, 20);
       }
     } else {
       // Fallback to text if no logo provided
-      doc.setFontSize(PDF_OPTIONS.FONT_SIZE_HEADER);
+      doc.setFontSize(16);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(PDF_OPTIONS.COLOR_WHITE);
       doc.text('AutoInspect', contentX, 20);
     }
     
-    // Add document title (centered, adjusted for logo)
-    doc.setFontSize(PDF_OPTIONS.FONT_SIZE_TITLE);
+    // Add modern document title
+    doc.setFontSize(20);
     doc.setFont('helvetica', 'bold');
+    doc.setTextColor(PDF_OPTIONS.COLOR_WHITE);
+    
+    // Título principal
     doc.text(
-      'Inspection Report',
+      'INFORME DE INSPECCIÓN',
       pageWidth / 2,
-      logoDataUrl ? 40 : 30, // Adjust Y position based on logo presence
-      { align: 'center' }
+      logoDataUrl ? 38 : 30, // Ajuste fino de posición vertical
+      { 
+        align: 'center',
+        renderingMode: 'fill',
+        lineHeightFactor: 1.2
+      }
     );
+    
+    // Línea decorativa sutil
+    doc.setDrawColor(255, 255, 255, 0.3);
+    doc.setLineWidth(0.8);
+    doc.line(
+      pageWidth / 2 - 60,  // Centrado con margen
+      (logoDataUrl ? 38 : 30) + 5,  // Debajo del texto
+      pageWidth / 2 + 60,  // Mismo ancho que el título
+      (logoDataUrl ? 38 : 30) + 5   // Misma posición Y
+    );
+    
+    // Restaurar color para el resto del contenido
+    doc.setTextColor(PDF_OPTIONS.COLOR_WHITE);
     
     // Add inspection ID and date (right aligned, on separate lines)
     doc.setFontSize(PDF_OPTIONS.FONT_SIZE_SMALL);
@@ -776,7 +826,7 @@ const addHeader = (doc: jsPDF, inspection: SavedInspection, state: PdfState, log
     const infoStartY = headerHeight + PDF_OPTIONS.ELEMENT_MARGIN * 1.5;
     
     // Add document title
-    doc.setFontSize(PDF_OPTIONS.FONT_SIZE_HEADER);
+    doc.setFontSize(18);
     doc.setFont('helvetica', 'bold');
     doc.text('Informe de Inspección', contentX, infoStartY);
     
@@ -947,16 +997,21 @@ const generatePdfContent = async (doc: jsPDF, inspection: SavedInspection): Prom
     try {
       const rawLogo = await loadImageAsDataUrl('/assets/logogrande.png');
       if (rawLogo) {
-        const LOGO_W = 80;  // width in PDF points (smaller for better performance)
-        const LOGO_H = 26;  // height in PDF points
-        logoDataUrl = await reencodeForPdf(rawLogo, LOGO_W, LOGO_H, 0.70);
-      }
+        const LOGO_W = 160;  // Reducido de 200
+        const LOGO_H = 50;  // Reducido de 60
+        // Aplana en blanco y exporta JPEG para evitar “negro”
+        logoDataUrl = await reencodeForPdf(rawLogo, LOGO_W, LOGO_H, {
+          format: 'JPEG',
+          quality: 0.85,
+          forceWhiteBg: true,
+        });
+      }      
     } catch (error) {
       console.warn('Could not load logo, falling back to text header');
     }
     
     // Add header with (possibly) compressed logo
-    state.currentY = addHeader(doc, inspection, state, logoDataUrl || undefined);
+    state.currentY = await addHeader(doc, inspection, state, logoDataUrl || undefined);
     
     // Process each vehicle
     if (inspection.vehicles && inspection.vehicles.length > 0) {

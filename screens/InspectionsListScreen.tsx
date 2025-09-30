@@ -8,7 +8,7 @@ import Button from '../components/Button.tsx';
 import ConfirmationModal from '../components/ConfirmationModal.tsx';
 import { SavedInspection, InspectionStep } from '../types.ts'; 
 import { getInspections, overwriteAllInspections, getInspectionById, saveInspection } from '../services/inspectionService';
-import { generatePdf, generatePdfBlobUrl } from '../services/pdfGenerator.ts';
+import { generatePdf, generatePdfBlobUrl, generatePdfBlob } from '../services/pdfGenerator.ts';
 import { InspectionContext } from '../App.tsx'; 
 
 const InspectionCard: React.FC<{ 
@@ -176,95 +176,97 @@ const InspectionsListScreen: React.FC = () => {
 
   const handleSendEmail = async () => {
     if (!currentInspectionForEmail || !currentEmail) return;
-    
-    // Basic email validation
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(currentEmail)) {
-      setEmailError('Please enter a valid email address');
+
+    // Validación básica de email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(currentEmail)) {
+      setEmailError('Por favor ingresa un correo electrónico válido');
       return;
     }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      throw new Error('La operación tardó demasiado tiempo. Intenta de nuevo.');
+    }, 30000);
 
     setIsSendingEmail(true);
     setEmailError(null);
 
+    const fail = (msg: string, err?: unknown) => {
+      console.error('Email error:', err);
+      clearTimeout(timeoutId);
+      setEmailError(msg);
+      toast.error(msg);
+      setIsSendingEmail(false);
+    };
+
     try {
-      // Generate the PDF content
-      const pdfUrl = await generatePdfBlobUrl(currentInspectionForEmail);
+      // 1) Generar el PDF
+      const blob = await generatePdfBlob(currentInspectionForEmail);
       
-      // Convert date to proper format
-      const inspectionDate = currentInspectionForEmail.inspectionDate 
-        ? new Date(currentInspectionForEmail.inspectionDate) 
-        : new Date();
-      
-      // Prepare email content
-      const emailContent = `
-        <h1>Inspección de Vehículo</h1>
-        <p>Hola,</p>
-        <p>Adjunto encontrarás el informe de inspección para ${currentInspectionForEmail.insuredName || 'tu vehículo'}.</p>
-        <p><strong>Detalles:</strong></p>
-        <ul>
-          <li>Agente: ${currentInspectionForEmail.agentName}</li>
-          <li>Fecha: ${inspectionDate.toLocaleDateString()}</li>
-          <li>N° de Póliza: ${currentInspectionForEmail.policyNumber || 'N/A'}</li>
-        </ul>
-        <p>Gracias por usar AutoInspect.</p>
-      `;
+      // 2) Convertir a base64
+      const base64 = await blobToBase64(blob);
+      const filename = `inspeccion_${currentInspectionForEmail.policyNumber || 'sin_poliza'}_${Date.now()}.pdf`;
 
-      // Get PDF as blob
-      const pdfResponse = await fetch(pdfUrl, {
-        headers: {
-          'Content-Type': 'text/plain',
+      // 3) Subir a Netlify Blobs (opcional)
+      let key: string | null = null;
+      try {
+        const upRes = await fetch('/.netlify/functions/upload-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            filename: filename.replace(/[^\w.\-]+/g, '_'),
+            data: base64 
+          }),
+          signal: controller.signal
+        });
+        
+        if (upRes.ok) {
+          const result = await upRes.json();
+          key = result.key || result.blobId || null;
+        } else {
+          const errorText = await upRes.text();
+          console.warn('Error subiendo a Blobs, usando fallback a base64:', errorText);
         }
-      });
-      if (!pdfResponse.ok) {
-        throw new Error(`Error al obtener el PDF: ${pdfResponse.statusText}`);
+      } catch (e) {
+        console.warn('Error en subida a Blobs, usando fallback a base64:', e);
       }
-      
-      const pdfBlob = await pdfResponse.blob();
-      
-      // Convert blob to base64
-      const pdfBase64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64data = reader.result?.toString().split(',')[1];
-          if (!base64data) {
-            reject(new Error('Error al convertir el PDF a base64'));
-            return;
-          }
-          resolve(base64data);
-        };
-        reader.onerror = () => reject(new Error('Error al leer el archivo PDF'));
-        reader.readAsDataURL(pdfBlob);
-      });
 
-      // Prepare email data
-      const emailData = {
+      // 4) Enviar correo
+      const mailPayload = {
         to: currentEmail,
-        subject: `Informe de Inspección - ${inspectionDate.toLocaleDateString()}`,
-        html: emailContent,
-        attachments: [{
-          filename: `inspeccion_${currentInspectionForEmail.policyNumber || 'sin_poliza'}.pdf`,
-          content: pdfBase64,
-          type: 'application/pdf',
-          disposition: 'attachment',
-          size: pdfBlob.size
-        }]
+        filename: filename.replace(/[^\w.\-]+/g, '_'),
+        data: base64,
+        ...(key ? { key } : {}), // Solo incluir key si existe
+        subject: `Informe de Inspección - ${new Date().toLocaleDateString()}`,
+        html: `
+          <h1>Inspección de Vehículo</h1>
+          <p>Hola,</p>
+          <p>Adjunto encontrarás el informe de inspección para ${currentInspectionForEmail.insuredName || 'tu vehículo'}.</p>
+          <p><strong>Detalles:</strong></p>
+          <ul>
+            <li>Agente: ${currentInspectionForEmail.agentName || 'No especificado'}</li>
+            <li>Fecha: ${new Date().toLocaleDateString()}</li>
+            <li>N° de Póliza: ${currentInspectionForEmail.policyNumber || 'N/A'}</li>
+          </ul>
+          <p>Gracias por usar AutoInspect.</p>
+        `
       };
 
-      // Send email
-      const emailResponse = await fetch('/.netlify/functions/send-email-attach', {
+      const mailRes = await fetch('/.netlify/functions/send-email-attach', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
-        body: JSON.stringify(emailData),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mailPayload),
+        signal: controller.signal
       });
 
-      if (!emailResponse.ok) {
-        const errorData = await emailResponse.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Error al enviar el correo');
+      if (!mailRes.ok) {
+        const error = await mailRes.json().catch(() => ({}));
+        throw new Error((error as any).message || 'Error al enviar el correo');
       }
 
-      // Update inspection with email info
+      // 5) Actualizar la inspección
       const updatedInspection = {
         ...currentInspectionForEmail,
         emailSent: true,
@@ -274,29 +276,51 @@ const InspectionsListScreen: React.FC = () => {
         updatedAt: new Date().toISOString()
       };
 
-      // Save updated inspection
       await saveInspection(updatedInspection);
       
-      // Update local state
+      // 6) Actualizar el estado local
       setInspections(prev => 
         prev.map(insp => 
           insp.id === updatedInspection.id ? updatedInspection : insp
         )
       );
 
-      // Show success message
-      toast.success('Correo enviado exitosamente');
+      // 7) Mostrar mensaje de éxito
+      toast.success('¡Correo enviado exitosamente!');
       setShowEmailModal(false);
       
-    } catch (error) {
-      console.error('Error sending email:', error);
-      setEmailError(error instanceof Error ? error.message : 'Error al enviar el correo');
-      toast.error('Error al enviar el correo. Por favor intente de nuevo.');
+    } catch (e: any) {
+      console.error('Error en el proceso de envío:', e);
+      let msg = e?.message || 'Ocurrió un error enviando el correo';
+      if (e.name === 'AbortError' || /timeout/i.test(msg)) {
+        msg = 'La operación tardó demasiado tiempo. Por favor, inténtalo de nuevo.';
+      } else if (/Failed to fetch/i.test(msg)) {
+        msg = 'No se pudo conectar con el servidor. Verifica tu conexión a internet.';
+      }
+      fail(msg, e);
     } finally {
+      clearTimeout(timeoutId);
       setIsSendingEmail(false);
     }
   };
 
+
+  // Helper function to convert Blob to base64
+  const blobToBase64 = async (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64data = reader.result?.toString().split(',')[1];
+        if (!base64data) {
+          reject(new Error('Error al convertir el archivo a base64'));
+          return;
+        }
+        resolve(base64data);
+      };
+      reader.onerror = () => reject(new Error('Error al leer el archivo'));
+      reader.readAsDataURL(blob);
+    });
+  };
 
   const inspectionBeingDeleted = inspections.find(insp => insp.id === inspectionToDeleteId);
   const vehicleInfoForModal = inspectionBeingDeleted?.vehicles?.[0]?.make && inspectionBeingDeleted?.vehicles?.[0]?.model

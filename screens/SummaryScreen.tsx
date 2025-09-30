@@ -424,16 +424,19 @@ const SummaryScreen: React.FC = () => {
             );
           })}
 
-          <div className="mt-8 flex flex-col space-y-3 sm:flex-row sm:justify-between items-center">
-            <Button onClick={() => navigate('/photos')} variant="outline" className="w-full sm:w-auto">
-              Back to Photos
-            </Button>
-            <Button onClick={handleGeneratePdf} size="lg" isLoading={isGeneratingPdf} className="w-full sm:w-auto">
-              {isGeneratingPdf ? 'Processing...' : 'Generate & Save PDF'}
-            </Button>
-            <Button onClick={() => setShowEmailModal(true)} variant="primary" className="w-full sm:w-auto">
-              Send Email
-            </Button>
+          {/* Action Bar */}
+          <div className="sticky bottom-0 z-10 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-t p-4 mt-8">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Button variant="outline" className="w-full" onClick={() => navigate('/photos')}>
+                Back to Photos
+              </Button>
+              <Button className="w-full" size="lg" onClick={handleGeneratePdf} isLoading={isGeneratingPdf}>
+                {isGeneratingPdf ? 'Processing...' : 'Generate & Save PDF'}
+              </Button>
+              <Button variant="primary" className="w-full" size="lg" onClick={() => setShowEmailModal(true)}>
+                Send Email
+              </Button>
+            </div>
           </div>
         </div>
 
