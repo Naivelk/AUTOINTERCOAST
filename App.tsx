@@ -15,7 +15,7 @@ import ContactScreen from './screens/ContactScreen.tsx';
 import LicenseScreen from './screens/LicenseScreen.tsx';
 import BottomNav from './components/BottomNav.tsx';
 import { Inspection, InspectionStep } from './types.ts';
-import { initialInspectionState, initialVehicleState } from './constants.ts';
+import { initialInspectionState, initialVehicleState, STORAGE_KEYS } from './constants.ts';
 
 // Contexto global para la inspección
 interface InspectionContextType {
@@ -56,10 +56,45 @@ const App: React.FC = () => {
     );
   }
 
-  // Estado y lógica de contexto
-  const [currentInspection, setCurrentInspection] = useState<Inspection>(initialInspectionState());
-  const [currentStep, setCurrentStep] = useState<InspectionStep>(InspectionStep.VEHICLE_DETAILS);
-  const [currentVehicleIndex, setCurrentVehicleIndex] = useState<number>(0);
+  // Storage helper
+  const STORAGE = {
+    get: (k: string) => {
+      try { return localStorage.getItem(k) ?? sessionStorage.getItem(k); } 
+      catch { return sessionStorage.getItem(k); }
+    },
+    set: (k: string, v: string) => {
+      try { localStorage.setItem(k, v); } catch {}
+      try { sessionStorage.setItem(k, v); } catch {}
+    }
+  };
+
+  // Estado y lógica de contexto con persistencia
+  const [currentInspection, setCurrentInspection] = useState<Inspection>(() => {
+    try { 
+      const saved = STORAGE.get(STORAGE_KEYS.inspection);
+      return saved ? JSON.parse(saved) : initialInspectionState();
+    } catch { 
+      return initialInspectionState(); 
+    }
+  });
+
+  const [currentStep, setCurrentStep] = useState<InspectionStep>(() => {
+    try { 
+      const saved = STORAGE.get(STORAGE_KEYS.step);
+      return saved ? Number(saved) as InspectionStep : InspectionStep.VEHICLE_DETAILS;
+    } catch { 
+      return InspectionStep.VEHICLE_DETAILS; 
+    }
+  });
+
+  const [currentVehicleIndex, setCurrentVehicleIndex] = useState<number>(() => {
+    try { 
+      const saved = STORAGE.get(STORAGE_KEYS.vehicleIndex);
+      return saved ? Number(saved) : 0;
+    } catch { 
+      return 0; 
+    }
+  });
 
   const resetInspection = () => {
     setCurrentInspection(initialInspectionState());
@@ -98,6 +133,48 @@ const App: React.FC = () => {
     });
     setCurrentVehicleIndex(newCalculatedActiveIndex);
   };
+
+  // Persistencia de estado
+  useEffect(() => {
+    try { 
+      STORAGE.set(STORAGE_KEYS.inspection, JSON.stringify(currentInspection));
+    } catch {}
+  }, [currentInspection]);
+
+  useEffect(() => {
+    try { 
+      STORAGE.set(STORAGE_KEYS.step, String(currentStep));
+    } catch {}
+  }, [currentStep]);
+
+  useEffect(() => {
+    try { 
+      STORAGE.set(STORAGE_KEYS.vehicleIndex, String(currentVehicleIndex));
+    } catch {}
+  }, [currentVehicleIndex]);
+
+  // Flush extra al ocultarse la página (iOS)
+  useEffect(() => {
+    const flush = () => {
+      try {
+        STORAGE.set(STORAGE_KEYS.inspection, JSON.stringify(currentInspection));
+        STORAGE.set(STORAGE_KEYS.step, String(currentStep));
+        STORAGE.set(STORAGE_KEYS.vehicleIndex, String(currentVehicleIndex));
+      } catch {}
+    };
+    
+    const onHidden = () => { 
+      if (document.visibilityState === 'hidden') flush();
+    };
+    
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onHidden);
+    
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onHidden);
+    };
+  }, [currentInspection, currentStep, currentVehicleIndex]);
 
   // Mantener navegación SPA estable
   useEffect(() => {

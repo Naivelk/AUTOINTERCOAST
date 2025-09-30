@@ -210,7 +210,11 @@ const InspectionsListScreen: React.FC = () => {
       `;
 
       // Get PDF as blob
-      const pdfResponse = await fetch(pdfUrl);
+      const pdfResponse = await fetch(pdfUrl, {
+        headers: {
+          'Content-Type': 'text/plain',
+        }
+      });
       if (!pdfResponse.ok) {
         throw new Error(`Error al obtener el PDF: ${pdfResponse.statusText}`);
       }
@@ -247,16 +251,16 @@ const InspectionsListScreen: React.FC = () => {
       };
 
       // Send email
-      const response = await fetch('http://localhost:3001/api/send-email', {
+      const emailResponse = await fetch('/.netlify/functions/send-email-attach', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'text/plain',
         },
         body: JSON.stringify(emailData),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+      if (!emailResponse.ok) {
+        const errorData = await emailResponse.json().catch(() => ({}));
         throw new Error(errorData.message || 'Error al enviar el correo');
       }
 

@@ -5,38 +5,13 @@ import { InspectionContext } from '../App';
 import { generatePdfBlob } from '../services/pdfGenerator';
 import { saveInspection } from '../services/inspectionService';
 
-// Tipos
-interface Photo { id: string; base64?: string }
-interface Vehicle {
-  clientId?: string;
-  make?: string;
-  model?: string;
-  year?: string;
-  plateNumber?: string;
-  chassisNumber?: string;
-  photos: {
-    [key: string]: Photo | undefined;
-    front?: Photo; back?: Photo; left?: Photo; right?: Photo;
-    vin?: Photo; registration?: Photo; ownerId?: Photo; location?: Photo;
-  };
-}
-// @ts-ignore - usado por el contexto
-interface Inspection {
-  id?: string;
-  agentName: string;
-  insuredName: string;
-  policyNumber: string;
-  inspectionDate: string | Date;
-  vehicles: Vehicle[];
-  emailSent?: boolean;
-  emailAddress?: string;
-  sentAt?: string;
-  pdfGenerated?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-  [key: string]: any;
-}
+// ───────────────────────────────────────────────────────────
+// Utils
+// ───────────────────────────────────────────────────────────
+import { isIOS } from '../utils/device';
 
+// ───────────────────────────────────────────────────────────
+// Tipos
 interface SummaryItemProps {
   label: string;
   value: string | React.ReactNode;
@@ -54,16 +29,17 @@ const SummaryItem: React.FC<SummaryItemProps> = ({ label, value, isMissing = fal
   </div>
 );
 
-// util: Blob -> base64 (solo la parte base64)
-const blobToBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onerror = () => reject(new Error('No se pudo leer el PDF'));
-  reader.onload = () => {
-    const result = reader.result as string; // "data:application/pdf;base64,XXXX"
-    resolve(result.split(',')[1] || '');
-  };
-  reader.readAsDataURL(blob);
-});
+// Blob -> base64 (solo la parte base64)
+const blobToBase64 = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('No se pudo leer el PDF'));
+    reader.onload = () => {
+      const result = reader.result as string; // "data:application/pdf;base64,XXXX"
+      resolve(result.split(',')[1] || '');
+    };
+    reader.readAsDataURL(blob);
+  });
 
 const SummaryScreen: React.FC = () => {
   const context = useContext(InspectionContext);
@@ -84,7 +60,19 @@ const SummaryScreen: React.FC = () => {
   };
 
   if (!context) return <div>Cargando...</div>;
-  const { currentInspection } = context;
+
+  const { currentInspection, setCurrentInspection } = context;
+
+  // Rehidrata si iOS remontó el componente y el contexto viene vacío
+  useEffect(() => {
+    if (!currentInspection) {
+      try {
+        const cached = sessionStorage.getItem('currentInspection');
+        if (cached) setCurrentInspection(JSON.parse(cached));
+      } catch { /* ignore */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => { setIsGeneratingPdf(false); }, [currentInspection?.id]);
 
@@ -121,28 +109,36 @@ const SummaryScreen: React.FC = () => {
     );
   }
 
-  // Descargar PDF (solo “guardar”)
+  
+  const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (/\bMacintosh\b/.test(navigator.userAgent) && 'ontouchend' in document);
+  const openingRef = React.useRef(false); // evita doble click o dobles invocaciones
+
   const handleGeneratePdf = async () => {
-    if (!currentInspection) return;
+    if (openingRef.current || !currentInspection) return;
+    openingRef.current = true;
     setIsGeneratingPdf(true);
+
     try {
       const blob = await generatePdfBlob(currentInspection as any);
       const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `inspection-${currentInspection.id || Date.now()}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      
-      // Clean up
-      setTimeout(() => {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      }, 0);
+      const filename = `inspection_${currentInspection.policyNumber || 'report'}_${Date.now()}.pdf`.replace(/[^\w.-]/g,'_');
 
-      setModalTitle('PDF Generated');
-      setModalMessage('The PDF has been generated and downloaded successfully. Would you like to email it?');
-      setShowEmailModal(true);
+      if (isiOS) {
+        // iOS: no intenta descargar; solo abre el visor en una pestaña
+        window.open(url, '_blank', 'noopener');
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      } else {
+        // Desktop: descarga directa
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 15000);
+      }
+
+      // No abrimos el modal aquí. Se abrirá con el botón "Send Email"
     } catch (e) {
       console.error('Error generating PDF:', e);
       setModalTitle('Error');
@@ -150,36 +146,49 @@ const SummaryScreen: React.FC = () => {
       setShowSuccessModal(true);
     } finally {
       setIsGeneratingPdf(false);
+      openingRef.current = false;
     }
   };
 
-  // Helper para reintentos con backoff
-  const fetchWithRetry = async (url: string, options: RequestInit = {}, retries = 2, backoff = 600): Promise<Response> => {
+  // ───────────────────────────────────────────────────────────
+  // fetch con retry (sin keepalive)
+  // ───────────────────────────────────────────────────────────
+  const fetchWithRetry = async (
+    url: string,
+    options: RequestInit = {},
+    retries = 2,
+    backoff = 600
+  ): Promise<Response> => {
+    const headers = new Headers(options.headers || {});
+    if (typeof options.body === 'string' && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     const merged: RequestInit = {
-      keepalive: true, // 👈 útil en móvil
-      headers: { 'content-type': 'application/json', ...(options.headers || {}) },
       ...options,
+      headers,
+      credentials: options.credentials ?? 'same-origin',
+      signal: controller.signal,
     };
-    
+
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-      
-      const response = await fetch(url, {
-        ...merged,
-        signal: controller.signal,
-      });
-      
+      const res = await fetch(url, merged);
       clearTimeout(timeoutId);
-      return response;
-    } catch (error) {
-      if (retries <= 0) throw error;
-      await new Promise(r => setTimeout(r, backoff));
-      return fetchWithRetry(url, merged, retries - 1, backoff * 2);
+      return res;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (retries <= 0) throw err;
+      await new Promise((r) => setTimeout(r, backoff));
+      return fetchWithRetry(url, options, retries - 1, backoff * 2);
     }
   };
 
-  // Enviar por email: genera PDF -> base64 -> sube -> envía con key+data
+  // ───────────────────────────────────────────────────────────
+  // Enviar por email
+  // ───────────────────────────────────────────────────────────
   const handleSendEmail = async () => {
     if (!email || !currentInspection) return;
 
@@ -195,7 +204,7 @@ const SummaryScreen: React.FC = () => {
     const timeoutId = setTimeout(() => {
       controller.abort();
       throw new Error('La operación tardó demasiado tiempo. Intenta de nuevo.');
-    }, 30000); // 30s timeout
+    }, 30000);
 
     setIsSendingEmail(true);
     setModalTitle('Enviando correo...');
@@ -212,26 +221,25 @@ const SummaryScreen: React.FC = () => {
     };
 
     try {
-      // 1. Generar PDF directo como Blob
       addDebugLog('Generando PDF...');
       const blob = await generatePdfBlob(currentInspection as any);
       addDebugLog(`PDF generado (${(blob.size / (1024 * 1024)).toFixed(2)} MB)`);
 
-      // 2. Convertir a base64
       addDebugLog('Convirtiendo a base64...');
       const base64 = await blobToBase64(blob);
       const filename = `inspeccion_${currentInspection.policyNumber || 'sin_poliza'}_${Date.now()}.pdf`;
 
-      // 4. Subir a Netlify Blobs
+      // Subir a Blobs (opcional)
       let key: string | null = null;
       try {
         addDebugLog('Subiendo a Netlify Blobs...');
+        
         const upRes = await fetchWithRetry('/.netlify/functions/upload-report', {
           method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify({ filename, data: base64 }),
           credentials: 'same-origin',
         });
-        
         if (upRes.ok) {
           const result = await upRes.json();
           key = result.key;
@@ -244,27 +252,51 @@ const SummaryScreen: React.FC = () => {
         console.warn('Error en subida a Blobs, usando fallback a base64:', e);
       }
 
-      // 5. Enviar email con PDF adjunto
+      // true cuando haces build/deploy en Netlify; false cuando corres `vite`/`netlify dev`
+      const USE_BLOBS = import.meta.env.PROD;
+
+      // En producción subimos a Blobs (más eficiente y barato)
+      if (USE_BLOBS) {
+        try {
+          const upRes = await fetchWithRetry('/.netlify/functions/upload-report', {
+            method: 'POST',
+            body: JSON.stringify({ filename, data: base64 }),
+            credentials: 'same-origin',
+          });
+          if (upRes.ok) {
+            const json = await upRes.json();
+            key = json.key;
+            addDebugLog(`Archivo subido con clave: ${key}`);
+          } else {
+            const errorText = await upRes.text();
+            console.warn('Error subiendo a Blobs, usando fallback a base64:', errorText);
+          }
+        } catch (e) {
+          console.warn('Error en subida a Blobs, usando fallback a base64:', e);
+        }
+      }
+
+      // Envío de correo
       addDebugLog('Enviando email...');
       const mailPayload = {
         to: email,
         filename: filename.replace(/[^\w.\-]+/g, '_'),
-        ...(key && { key }), // Solo incluir key si existe
-        data: base64, // Siempre incluir datos base64 como respaldo
+        data: base64,
+        ...(key ? { key } : {}), // Solo incluir key si existe
       };
 
       const mailRes = await fetchWithRetry('/.netlify/functions/send-email-attach', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(mailPayload),
         credentials: 'same-origin',
       });
 
       if (!mailRes.ok) {
         const error = await mailRes.json().catch(() => ({}));
-        throw new Error(error.message || 'Error al enviar el correo');
+        throw new Error((error as any).message || 'Error al enviar el correo');
       }
 
-      // 6. Guardar estado de la inspección
       const updated = {
         ...currentInspection,
         id: currentInspection.id || `inspection_${Date.now()}`,
@@ -272,12 +304,11 @@ const SummaryScreen: React.FC = () => {
         emailAddress: email,
         sentAt: new Date().toISOString(),
         pdfGenerated: true,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      
+
       await saveInspection(updated);
 
-      // 7. Éxito
       clearTimeout(timeoutId);
       addDebugLog('¡Correo enviado con éxito!');
       setModalTitle('¡Éxito!');
@@ -299,7 +330,7 @@ const SummaryScreen: React.FC = () => {
     }
   };
 
-  // Notas / advertencias de fotos (no bloquea)
+  // Advertencias de fotos (no bloquea)
   useEffect(() => {
     try {
       if (!currentInspection?.vehicles) return;
@@ -333,6 +364,7 @@ const SummaryScreen: React.FC = () => {
     };
     return (
       <button
+        type="button"
         onClick={onClick}
         disabled={isLoading}
         className={`${base} ${sizes[size]} ${variants[variant]} ${className} ${isLoading ? 'opacity-70 cursor-not-allowed' : ''}`}
@@ -399,6 +431,9 @@ const SummaryScreen: React.FC = () => {
             <Button onClick={handleGeneratePdf} size="lg" isLoading={isGeneratingPdf} className="w-full sm:w-auto">
               {isGeneratingPdf ? 'Processing...' : 'Generate & Save PDF'}
             </Button>
+            <Button onClick={() => setShowEmailModal(true)} variant="primary" className="w-full sm:w-auto">
+              Send Email
+            </Button>
           </div>
         </div>
 
@@ -406,7 +441,14 @@ const SummaryScreen: React.FC = () => {
         {showSuccessModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
             <div className="bg-white p-6 sm:p-8 rounded-lg shadow-xl text-center max-w-sm w-full">
-              <div className="text-green-500 mx-auto mb-4 text-5xl">✓</div>
+              <div
+                className={`mx-auto mb-4 text-5xl ${
+                  /error/i.test(modalTitle) ? 'text-red-500' : 'text-green-500'
+                }`}
+              >
+                {/error/i.test(modalTitle) ? '✕' : '✓'}
+              </div>
+
               <h3 className="text-xl font-semibold mb-2">{modalTitle}</h3>
               <p className="text-gray-600 mb-6">{modalMessage}</p>
               <div className="space-y-3">
@@ -417,8 +459,8 @@ const SummaryScreen: React.FC = () => {
                   Start New Inspection
                 </Button>
                 <Button onClick={handleViewInspections} variant="outline" className="w-full">
-  View All Inspections
-</Button>
+                  View All Inspections
+                </Button>
               </div>
             </div>
           </div>

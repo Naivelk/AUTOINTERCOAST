@@ -2,6 +2,16 @@ import { jsPDF } from 'jspdf';
 import { Vehicle, SavedInspection } from '../types';
 
 /**
+ * Determines the image format from a data URL
+ * @param dataUrl The data URL of the image
+ * @returns 'PNG' or 'JPEG' based on the data URL
+ */
+function getImageFormatFromDataUrl(dataUrl: string): 'JPEG' | 'PNG' {
+  if (dataUrl.startsWith('data:image/png')) return 'PNG';
+  return 'JPEG'; // default to JPEG
+}
+
+/**
  * Loads an image from a URL and returns it as a data URL
  * @param url The URL of the image to load
  * @returns A promise that resolves to the data URL of the image
@@ -171,7 +181,58 @@ const PDF_OPTIONS: PdfOptions = {
   FOOTER_HEIGHT: 30             // Height of the footer in pixels
 };
 
-// Add an image with a card background
+/**
+ * Adds an image with a card background to the PDF
+ * @param doc The jsPDF document instance
+ * @param photo The photo to add, must have base64 data
+ * @param x The x position to place the image
+ * @param y The y position to place the image
+ * @param width The available width for the image
+ * @param maxHeight The maximum height for the image
+ * @param showCaption Whether to show a caption
+ * @param _state Optional PDF state
+ * @returns The height of the added image and whether a new page was added
+ */
+/** Re-encodea la imagen al tamaño real que se dibujará en el PDF (y la pasa a JPEG) */
+async function reencodeForPdf(
+  dataUrl: string,
+  targetW: number,
+  targetH: number,
+  quality = 0.56 // 0.55–0.62 suele equilibrar bien
+): Promise<string> {
+  // Asegura JPEG (si viene PNG suele pesar más)
+  const ensureJpeg = (src: string) =>
+    src.startsWith('data:image/jpeg')
+      ? src
+      : src.replace(/^data:image\/png/, 'data:image/jpeg');
+
+  const img = await new Promise<HTMLImageElement>((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('img load'));
+    i.src = ensureJpeg(dataUrl);
+  });
+
+  // Escala para que quepa en el rectángulo (manteniendo aspecto)
+  const ratio = img.naturalWidth / img.naturalHeight;
+  let w = targetW;
+  let h = Math.round(targetW / ratio);
+  if (h > targetH) {
+    h = targetH;
+    w = Math.round(targetH * ratio);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w));
+  canvas.height = Math.max(1, Math.round(h));
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('no 2d');
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
 const addImageWithCard = async (
   doc: jsPDF,
   photo: PdfPhoto & { base64: string },
@@ -180,124 +241,93 @@ const addImageWithCard = async (
   width: number,
   maxHeight: number,
   showCaption = true,
-  _state?: PdfState // Optional and marked as unused
+  _state?: PdfState
 ): Promise<{ height: number; newPage: boolean }> => {
-  // Use PDF_OPTIONS for all dimensions and styling
   if (!photo.base64) {
-    console.warn('No image data provided');
+    console.warn('No image data available for photo:', photo.id);
     return { height: 0, newPage: false };
   }
-  
-  // Calculate minimum dimensions based on image category
-  const isSpecialImage = photo.category && [
-    'VIN Number',
-    'Vehicle Registration',
-    'Owner ID'
-  ].includes(photo.category);
-  
+
+  // Ensure dataURL format
+  let imageData = photo.base64.startsWith('data:')
+    ? photo.base64
+    : `data:image/jpeg;base64,${photo.base64}`;
+
+  // Load image for dimensions
+  const img = new Image();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = (e) => reject(new Error('Failed to load image'));
+      img.src = imageData;
+    });
+  } catch (error) {
+    console.error('Error loading image for dimensions:', error);
+    return { height: 100, newPage: false };
+  }
+
+  // Special categories
+  const isSpecialImage =
+    photo.category &&
+    ['VIN Number', 'Vehicle Registration', 'Owner ID'].includes(photo.category);
+
   const minImageWidth = isSpecialImage ? 300 : 250;
   const minImageHeight = isSpecialImage ? 250 : 200;
-  
-  // Calculate available space for the image (accounting for padding and caption)
-  const availableImageWidth = Math.max(width - (PDF_OPTIONS.IMAGE_PADDING * 2), minImageWidth);
-  
-  // Load image to get its dimensions
-  const loadImageDims = async (base64: string): Promise<{width: number, height: number}> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => resolve({ width: img.width, height: img.height });
-      img.onerror = () => resolve({ width: 0, height: 0 });
-      img.src = base64;
-    });
-  };
+  const availableImageWidth = Math.max(width - PDF_OPTIONS.IMAGE_PADDING * 2, minImageWidth);
 
-  // Get image dimensions
-  let imageWidth = photo.width ?? 0;
-  let imageHeight = photo.height ?? 0;
-  
-  if (imageWidth <= 0 || imageHeight <= 0) {
-    try {
-      const dimensions = await loadImageDims(photo.base64);
-      imageWidth = dimensions.width || minImageWidth;
-      imageHeight = dimensions.height || minImageHeight;
-    } catch (error) {
-      console.error('Error loading image dimensions:', error);
-      imageWidth = minImageWidth;
-      imageHeight = minImageHeight;
-    }
-  }
-  
-  // Calculate aspect ratio
-  const imgAspectRatio = imageWidth / imageHeight;
-  
-  // Calculate initial dimensions based on available width
+  // Original dimensions
+  let imageWidth = photo.width ?? img.width ?? minImageWidth;
+  let imageHeight = photo.height ?? img.height ?? minImageHeight;
+  const ratio = imageWidth / imageHeight;
+
+  // Initial scaling based on available width
   let finalRenderWidth = availableImageWidth;
-  let finalRenderHeight = availableImageWidth / imgAspectRatio;
-  
-  // Ensure minimum width is respected
+  let finalRenderHeight = finalRenderWidth / ratio;
+
+  // Respect minimum dimensions
   if (finalRenderWidth < minImageWidth) {
     finalRenderWidth = minImageWidth;
-    finalRenderHeight = finalRenderWidth / imgAspectRatio;
+    finalRenderHeight = finalRenderWidth / ratio;
   }
-  
-  // Ensure minimum height is respected
   if (finalRenderHeight < minImageHeight) {
     finalRenderHeight = minImageHeight;
-    finalRenderWidth = finalRenderHeight * imgAspectRatio;
+    finalRenderWidth = finalRenderHeight * ratio;
   }
-  
-  // If image is too tall, scale down to fit height
+
+  // Limit by max height
   if (finalRenderHeight > maxHeight) {
-    finalRenderHeight = maxHeight;
-    finalRenderWidth = finalRenderHeight * imgAspectRatio;
-    
-    // If width went below minimum, adjust both dimensions
+    finalRenderHeight = Math.max(minImageHeight, maxHeight);
+    finalRenderWidth = finalRenderHeight * ratio;
+
     if (finalRenderWidth < minImageWidth) {
       finalRenderWidth = minImageWidth;
-      finalRenderHeight = finalRenderWidth / imgAspectRatio;
+      finalRenderHeight = finalRenderWidth / ratio;
     }
   }
-  
-  // Calculate caption height if showing caption
+
+  // Caption height calculation
   let captionHeightPx = 0;
-  const captionLineHeight = 7; // For multi-line captions
-  
   if (showCaption) {
-    // Calculate how many lines the caption will take
-    const maxLineWidth = finalRenderWidth - (PDF_OPTIONS.IMAGE_PADDING * 2);
-    const captionWords = (photo.note?.trim() || photo.name?.trim() || 'SIN NOTA').trim().split(' ');
-    let currentLine = '';
-    let lineCount = 1;
-    
-    // Simple text wrapping algorithm
+    const text = (photo.note?.trim() || photo.name?.trim() || 'SIN NOTA').trim().toUpperCase();
     doc.setFontSize(PDF_OPTIONS.CAPTION_FONT_SIZE);
-    doc.setFont(PDF_OPTIONS.FONT_FAMILY, 'bold'); // 'bold' style works with standard fonts
-    
-    for (const word of captionWords) {
-      const testLine = currentLine ? `${currentLine} ${word}` : word;
-      const testWidth = doc.getTextWidth(testLine);
-      
-      if (testWidth <= maxLineWidth) {
-        currentLine = testLine;
-      } else {
-        if (currentLine) lineCount++;
-        currentLine = word;
-      }
-    }
-    
-    // Add the last line if not empty
-    if (currentLine) lineCount++;
-    
-    // Calculate total caption height with margins
-    captionHeightPx = (lineCount * captionLineHeight) + (PDF_OPTIONS.CAPTION_MARGIN_TOP * 2);
+    doc.setFont(PDF_OPTIONS.FONT_FAMILY, 'bold');
+
+    const maxTextWidth = finalRenderWidth - PDF_OPTIONS.CAPTION_PADDING * 2;
+    const lines = doc.splitTextToSize(text, maxTextWidth);
+    captionHeightPx =
+      lines.length * (PDF_OPTIONS.CAPTION_FONT_SIZE + 2) + 
+      PDF_OPTIONS.CAPTION_PADDING * 2 + 
+      PDF_OPTIONS.CAPTION_MARGIN_TOP;
   }
-  
-  // Calculate total card height (image + padding + caption)
-  const totalCardHeight = finalRenderHeight + (PDF_OPTIONS.IMAGE_PADDING * 2) + captionHeightPx;
-  
-  // Draw card background with shadow
-  doc.setDrawColor(0, 0, 0, PDF_OPTIONS.CARD_SHADOW_OPACITY * 255);
-  doc.setFillColor(0, 0, 0, PDF_OPTIONS.CARD_SHADOW_OPACITY * 255);
+
+  // Total card height (calculate once)
+  const totalCardHeight =
+    finalRenderHeight + 
+    PDF_OPTIONS.IMAGE_PADDING * 2 + 
+    (showCaption ? captionHeightPx : 0);
+
+  // Shadow effect (using light gray)
+  doc.setFillColor(230, 230, 230);
   doc.roundedRect(
     x + 2,
     y + 2,
@@ -307,10 +337,10 @@ const addImageWithCard = async (
     PDF_OPTIONS.IMAGE_BORDER_RADIUS,
     'F'
   );
-  
-  // Draw card background
-  doc.setDrawColor(255, 255, 255);
+
+  // White card background
   doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(255, 255, 255);
   doc.roundedRect(
     x,
     y,
@@ -320,149 +350,109 @@ const addImageWithCard = async (
     PDF_OPTIONS.IMAGE_BORDER_RADIUS,
     'FD'
   );
-  
-  // Calculate image position (centered in card)
-  const imagePosX = x + (width - finalRenderWidth) / 2;
-  const imagePosY = y + PDF_OPTIONS.IMAGE_PADDING;
-  
-  // Add the image with error handling
-  try {
-    doc.addImage(
-      photo.base64,
-      'JPEG',
-      imagePosX,
-      imagePosY,
-      finalRenderWidth,
-      finalRenderHeight,
-      undefined,
-      'FAST'
-    );
-  } catch (error) {
-    console.error('Error adding image to PDF:', error);
-    // Draw a placeholder if image fails to load
-    doc.setFillColor(255, 255, 255);
-    doc.rect(
-      x + (width - finalRenderWidth) / 2,
-      imagePosY,
-      finalRenderWidth,
-      finalRenderHeight,
-      'F'
-    );
-    
-    // Draw caption background
-    doc.setFillColor(255, 255, 255);
-    doc.rect(
-      x + (width - finalRenderWidth) / 2,
-      imagePosY + finalRenderHeight + PDF_OPTIONS.CAPTION_MARGIN_TOP,
-      finalRenderWidth,
-      captionHeightPx,
-      'F'
-    );
-    
-    // Draw caption text
-    const lines = doc.splitTextToSize(
-      (photo.note?.trim() || photo.name?.trim() || 'SIN NOTA').trim().toUpperCase(),
-      finalRenderWidth - PDF_OPTIONS.CAPTION_PADDING * 2
-    );
-    doc.text(
-      lines,
-      x + width / 2,
-      imagePosY + finalRenderHeight + PDF_OPTIONS.CAPTION_MARGIN_TOP + PDF_OPTIONS.CAPTION_PADDING + (lines.length * PDF_OPTIONS.LINE_HEIGHT) / 2,
-      { align: 'center', baseline: 'middle' }
-    );
-  }
-  
-    // Add caption if enabled
-  if (showCaption) {
-    const captionText = (photo.note || photo.name || 'SIN NOTA').trim();
-    const captionY = imagePosY + finalRenderHeight + PDF_OPTIONS.CAPTION_MARGIN_TOP;
-    const captionLineHeight = PDF_OPTIONS.LINE_HEIGHT * 1.2; // Slightly more spacing for captions
-    
-    doc.setFontSize(PDF_OPTIONS.CAPTION_FONT_SIZE);
-    doc.setFont(PDF_OPTIONS.FONT_FAMILY, 'bold');
-    doc.setTextColor(0, 0, 0);
-    
-    // Split text into lines and draw each line
-    const words = captionText.split(' ');
-    let currentLine = '';
-    let currentY = captionY;
-    
-    for (const word of words) {
-      const testLine = currentLine ? `${currentLine} ${word}` : word;
-      const testWidth = doc.getTextWidth(testLine);
-      
-      if (testWidth <= finalRenderWidth - (PDF_OPTIONS.IMAGE_PADDING * 2)) {
-        currentLine = testLine;
-      } else {
-        if (currentLine) {
-          doc.text(
-            currentLine.toUpperCase(),
-            x + width / 2,
-            currentY,
-            { align: 'center' }
-          );
-          currentY += captionLineHeight;
-        }
-        currentLine = word;
-      }
-    }
-    
-    // Draw the last line if not empty
-    if (currentLine) {
-      doc.text(
-        currentLine.toUpperCase(),
-        x + width / 2,
-        currentY,
-        { align: 'center' }
-      );
-    }
-  }
-  
-  // Calculate total height used by this card
-  const totalHeight = totalCardHeight + PDF_OPTIONS.ELEMENT_MARGIN;
-  
-  // Return the height used and whether a new page was added
-  return {
-    height: totalHeight,
-    newPage: false // Page breaks are now handled by the caller
-  };
+
+  // Center image in card
+  const imageX = x + (width - finalRenderWidth) / 2;
+  const imageY = y + PDF_OPTIONS.IMAGE_PADDING;
+
+  // Determine image format
+
+// Re-encodeamos al tamaño REAL que se va a dibujar (reduce muchísimo el peso)
+const embedDataUrl = await reencodeForPdf(
+  imageData,
+  Math.round(finalRenderWidth),
+  Math.round(finalRenderHeight),
+  0.58 // ajusta 0.55–0.62 si quieres más/menos peso
+);
+
+try {
+  // Ya es JPEG y del tamaño exacto; podemos fijar formato a 'JPEG'
+  doc.addImage(
+    embedDataUrl,
+    'JPEG',
+    imageX,
+    imageY,
+    finalRenderWidth,
+    finalRenderHeight,
+    undefined,
+    'FAST' // ✅
+  );
+
+} catch (error) {
+  // ... deja tu bloque catch como lo tienes (placeholder)
 }
 
-// Add footer to the PDF
-const addFooter = (doc: jsPDF, inspection: SavedInspection): void => {
-  const pageCount = doc.getNumberOfPages();
-  
-  for (let i = 1; i <= pageCount; i++) {
-    doc.setPage(i);
-    
-    // Footer background
-    doc.setFillColor(PDF_OPTIONS.COLOR_BACKGROUND);
-    doc.rect(
-      0,
-      doc.internal.pageSize.getHeight() - PDF_OPTIONS.FOOTER_HEIGHT,
-      doc.internal.pageSize.getWidth(),
-      PDF_OPTIONS.FOOTER_HEIGHT,
-      'F'
+
+  // Add caption
+  if (showCaption) {
+    const captionText = (photo.note?.trim() || photo.name?.trim() || 'SIN NOTA').trim().toUpperCase();
+    const captionY = imageY + finalRenderHeight + PDF_OPTIONS.CAPTION_MARGIN_TOP;
+
+    const lines = doc.splitTextToSize(
+      captionText,
+      finalRenderWidth - PDF_OPTIONS.CAPTION_PADDING * 2
     );
-    
-    // Page number
-    doc.setFontSize(PDF_OPTIONS.FONT_SIZE_SMALL);
-    doc.setTextColor(PDF_OPTIONS.COLOR_TEXT_SECONDARY);
+
+    doc.setFillColor(255, 255, 255);
+    doc.rect(imageX, captionY, finalRenderWidth, captionHeightPx, 'F');
+
+    doc.setFontSize(PDF_OPTIONS.CAPTION_FONT_SIZE);
+    doc.setTextColor(0, 0, 0);
     doc.text(
-      `Página ${i} de ${pageCount}`,
-      doc.internal.pageSize.getWidth() - PDF_OPTIONS.PAGE_MARGIN,
-      doc.internal.pageSize.getHeight() - PDF_OPTIONS.PAGE_MARGIN,
-      { align: 'right' }
-    );
-    
-    // Inspection ID
-    doc.text(
-      `ID: ${inspection.id || 'N/A'}`,
-      PDF_OPTIONS.PAGE_MARGIN,
-      doc.internal.pageSize.getHeight() - PDF_OPTIONS.PAGE_MARGIN
+      lines, 
+      imageX + finalRenderWidth / 2, 
+      captionY + PDF_OPTIONS.CAPTION_PADDING, 
+      { align: 'center', baseline: 'top' }
     );
   }
+
+  return { 
+    height: totalCardHeight, 
+    newPage: false 
+  };
 };
+
+// Add footer to the PDF
+// Dibuja el pie SOLO en la página actual
+const addFooter = (
+  doc: jsPDF,
+  inspection: SavedInspection,
+  page: number,
+  total: number
+): void => {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  // Fondo del footer
+  doc.setFillColor(PDF_OPTIONS.COLOR_BACKGROUND);
+  doc.rect(
+    0,
+    pageHeight - PDF_OPTIONS.FOOTER_HEIGHT,
+    pageWidth,
+    PDF_OPTIONS.FOOTER_HEIGHT,
+    'F'
+  );
+
+  // Texto
+  doc.setFontSize(PDF_OPTIONS.FONT_SIZE_SMALL);
+  doc.setTextColor(PDF_OPTIONS.COLOR_TEXT_SECONDARY);
+
+  // Número de página
+  doc.text(
+    `Página ${page} de ${total}`,
+    pageWidth - PDF_OPTIONS.PAGE_MARGIN,
+    pageHeight - PDF_OPTIONS.PAGE_MARGIN,
+    { align: 'right' }
+  );
+
+  // ID de inspección
+  doc.text(
+    `ID: ${inspection.id || 'N/A'}`,
+    PDF_OPTIONS.PAGE_MARGIN,
+    pageHeight - PDF_OPTIONS.PAGE_MARGIN
+  );
+};
+
 
 // Format date to localized string
 const formatDate = (dateString: string): string => {
@@ -714,7 +704,6 @@ const addHeader = (doc: jsPDF, inspection: SavedInspection, state: PdfState, log
   });
   
   // Set compression for better performance
-  doc.setLanguage('en-US');
   doc.setFont(PDF_OPTIONS.FONT_FAMILY);
   
   try {
@@ -724,14 +713,14 @@ const addHeader = (doc: jsPDF, inspection: SavedInspection, state: PdfState, log
     
     // Add logo (left side) or fallback to text
     if (logoDataUrl) {
-      // Add logo with fixed dimensions (height: 32px, width will be proportional)
-      const logoHeight = 32;
-      const logoWidth = 100; // Adjust width proportionally based on your logo's aspect ratio
+      // Add logo with optimized dimensions
+      const logoHeight = 26;  // Reduced from 32
+      const logoWidth = 80;   // Reduced from 100
       
       try {
         doc.addImage(
           logoDataUrl,
-          'PNG',
+          'JPEG',  // Now using JPEG for better compression
           contentX,
           14, // Y position
           logoWidth,
@@ -953,15 +942,20 @@ const generatePdfContent = async (doc: jsPDF, inspection: SavedInspection): Prom
     // Update content width in options
     PDF_OPTIONS.CONTENT_WIDTH = state.contentWidth;
     
-    // Load logo if available
-    let logoDataUrl = null;
+    // Load logo if available (re-encoded and optimized)
+    let logoDataUrl: string | null = null;
     try {
-      logoDataUrl = await loadImageAsDataUrl('/assets/logogrande.png');
+      const rawLogo = await loadImageAsDataUrl('/assets/logogrande.png');
+      if (rawLogo) {
+        const LOGO_W = 80;  // width in PDF points (smaller for better performance)
+        const LOGO_H = 26;  // height in PDF points
+        logoDataUrl = await reencodeForPdf(rawLogo, LOGO_W, LOGO_H, 0.70);
+      }
     } catch (error) {
       console.warn('Could not load logo, falling back to text header');
     }
     
-    // Add header with logo
+    // Add header with (possibly) compressed logo
     state.currentY = addHeader(doc, inspection, state, logoDataUrl || undefined);
     
     // Process each vehicle
@@ -1014,7 +1008,8 @@ export const generatePdfBlob = async (inspection: SavedInspection): Promise<Blob
   const doc = new jsPDF({
     orientation: 'p',
     unit: 'pt',
-    format: 'a4'
+    format: 'a4',
+    compress: true, // ayuda a bajar el peso final 
   });
 
   try {
@@ -1023,9 +1018,9 @@ export const generatePdfBlob = async (inspection: SavedInspection): Promise<Blob
     const pageCount = doc.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
-      addFooter(doc, inspection);
+      addFooter(doc, inspection, i, pageCount);
     }
-
+    
     return doc.output('blob');
   } catch (error) {
     console.error('Error generating PDF:', error);

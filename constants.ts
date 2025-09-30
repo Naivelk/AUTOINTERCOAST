@@ -2,6 +2,14 @@
 import { Inspection, Photo, Vehicle, PhotoCategoryKey, PhotoCategoryConfig, AllPhotoCategoryKeys } from './types.ts';
 import { getDefaultAgentName } from './services/inspectionService.ts'; // Importar función
 
+// Keys for storage
+const STORAGE_PREFIX = 'autoinspect_';
+export const STORAGE_KEYS = {
+  inspection: `${STORAGE_PREFIX}current_inspection`,
+  step: `${STORAGE_PREFIX}current_step`,
+  vehicleIndex: `${STORAGE_PREFIX}current_vehicle_index`,
+} as const;
+
 export const APP_NAME = "AutoInspect";
 export const LOCAL_STORAGE_KEY = "autoinspect_inspections";
 

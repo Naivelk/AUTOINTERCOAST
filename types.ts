@@ -4,6 +4,7 @@ export interface Photo {
   base64: string | null;
   file?: File | null; // Temporary storage for file object before converting to base64
   note?: string; // Optional note for the photo
+  preview?: string | null; // URL for preview purposes (data URL or blob URL)
 }
 
 export interface Vehicle {
